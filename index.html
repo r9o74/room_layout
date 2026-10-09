@@ -15,9 +15,13 @@
   <div class="app">
     <section class="plan" aria-label="レイアウト">
       <div class="bar">
+        <button class="btn small menu-btn" id="menuBtn" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>メニュー</button>
         <h1>研究室レイアウト</h1>
         <div class="roomsize" id="roomsize"></div>
+        <div class="current" id="current"></div>
         <div class="spacer"></div>
+        <button class="btn small" id="updateBtn" type="button" disabled title="保存済みのレイアウトを続きから編集しているときに使えます">更新</button>
+        <button class="btn small" id="saveNewBtn" type="button">新規保存</button>
         <button class="btn small danger" id="clearBtn" type="button">すべて削除</button>
       </div>
       <div class="sheet" id="sheet">
@@ -100,7 +104,49 @@
       </div>
     </aside>
   </div>
+  <dialog class="dlg menu-dlg" id="menuDlg" aria-labelledby="menuTitle">
+    <div class="dlg-head">
+      <h2 id="menuTitle">メニュー</h2>
+      <button class="btn small" type="button" data-close>閉じる</button>
+    </div>
+    <div class="menu-actions">
+      <button class="btn small" id="newLayoutBtn" type="button">新しいレイアウトを作成</button>
+    </div>
+    <div class="menu-body">
+      <div class="menu-list-wrap">
+        <div class="menu-list-head">
+          <span class="label">保存済みのレイアウト</span>
+          <button class="btn small" id="reloadBtn" type="button">再読み込み</button>
+        </div>
+        <ul class="saved" id="savedList"></ul>
+      </div>
+      <div class="menu-view" id="menuView"></div>
+    </div>
+  </dialog>
+
+  <dialog class="dlg save-dlg" id="saveDlg" aria-labelledby="saveTitle">
+    <form method="dialog" id="saveForm" class="form" novalidate>
+      <div class="dlg-head">
+        <h2 id="saveTitle">名前をつけて保存</h2>
+      </div>
+      <div>
+        <label class="label" for="saveName">レイアウト名</label>
+        <input id="saveName" type="text" maxlength="50" autocomplete="off">
+      </div>
+      <div>
+        <label class="label" for="saveAuthor">作成者（任意）</label>
+        <input id="saveAuthor" type="text" maxlength="30" autocomplete="off">
+      </div>
+      <p class="err" id="saveErr" role="alert"></p>
+      <div class="dlg-foot">
+        <button class="btn" type="button" data-close>キャンセル</button>
+        <button class="btn primary" type="submit" id="saveSubmit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" hidden></div>
+  <script src="db.js"></script>
   <script src="app.js"></script>
 </body>
 

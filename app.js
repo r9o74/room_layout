@@ -18,7 +18,9 @@
   ];
   const templateItems = () =>
     TEMPLATE.map(([name, x, y, w, d, c], i) => ({ id: "t" + i, name, x, y, w, d, c, fixed: true }));
-  const initial = () => ({ room: { ...ROOM }, items: templateItems() });
+  // cloud: the saved layout being edited ({ id, name, author, updated_at }) or null.
+  // dirty: changed since it was last saved / opened. pendingName: suggested name for the next "新規保存" (after a copy).
+  const initial = () => ({ room: { ...ROOM }, items: templateItems(), cloud: null, dirty: false, pendingName: null });
 
   let state = load() || initial();
   let sel = new Set();
@@ -31,22 +33,38 @@
   const $ = id => document.getElementById(id);
   const svg = $("plan");
 
-  // The template always comes from the code; only its colors are restored from storage.
+  // Rebuild items from stored / downloaded data. The template always comes from the code (only its colors are kept),
+  // and other items are sanitized because saved layouts can be written by anyone.
+  function itemsFrom(list) {
+    const arr = Array.isArray(list) ? list.filter(i => i && typeof i === "object") : [];
+    const color = c => (Number.isInteger(c) && c >= 0 && c < 6 ? c : 0);
+    const num = v => (Number.isFinite(+v) ? Math.round(+v) : -1);
+    const fixed = templateItems();
+    for (const f of fixed) {
+      const o = arr.find(i => i.id === f.id);
+      if (o) f.c = color(o.c);
+    }
+    const own = arr.filter(i => !i.fixed).map(i => ({
+      id: typeof i.id === "string" && i.id && !/^t\d+$/.test(i.id) ? i.id.slice(0, 32) : uid(),
+      name: String(i.name ?? "").slice(0, 24), x: num(i.x), y: num(i.y), w: num(i.w), d: num(i.d),
+      c: color(i.c), r: ((num(i.r) % 4) + 4) % 4
+    })).filter(i => i.name && i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
+    return [...fixed, ...own];
+  }
+  function cloudOf(row) { return { id: row.id, name: row.name, author: row.author, updated_at: row.updated_at }; }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE));
       if (!s || !Array.isArray(s.items)) return null;
-      const fixed = templateItems();
-      for (const f of fixed) {
-        const o = s.items.find(i => i.id === f.id);
-        if (o && Number.isInteger(o.c) && o.c >= 0 && o.c < 6) f.c = o.c;
-      }
-      return { room: { ...ROOM }, items: [...fixed, ...s.items.filter(i => !i.fixed)] };
+      const cloud = s.cloud && typeof s.cloud.id === "string" ? cloudOf(s.cloud) : null;
+      return { room: { ...ROOM }, items: itemsFrom(s.items), cloud, dirty: !!s.dirty, pendingName: typeof s.pendingName === "string" ? s.pendingName : null };
     } catch (e) {}
     return null;
   }
-  function save() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
-  const uid = () => Math.random().toString(36).slice(2, 9);
+  function persist() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
+  // Called after every edit: remembers the layout in this browser and marks it as having unsaved changes.
+  function save() { state.dirty = true; persist(); }
+  function uid() { return Math.random().toString(36).slice(2, 9); }   // declared (hoisted) because load() runs first
   const snap = v => Math.round(v / SNAP) * SNAP;
   const byId = id => state.items.find(i => i.id === id);
   const selItems = () => state.items.filter(i => sel.has(i.id));
@@ -146,31 +164,59 @@
 
     // furniture: selected / dragged one drawn last so it sits on top
     const order = [...state.items].sort((a, b) => sel.has(a.id) - sel.has(b.id));
-    for (const it of order) {
-      const g = el("g", { class: "item" + (it.fixed ? " fixed" : "") + (sel.has(it.id) ? " sel" : "") + (it.id === blockerId ? " blocker" : "") + (drag && sel.has(it.id) ? " dragging" : ""), "data-id": it.id }, svg);
-      el("rect", { class: "body", x: it.x, y: it.y, width: it.w, height: it.d, rx: 2, fill: fillOf(it.c), stroke: strokeOf(it.c) }, g);
-      const fl = Math.min(it.w, it.d) * .5, r = it.r || 0, m = 4;
-      const fm = [
-        [it.x + it.w / 2 - fl / 2, it.y + it.d - m, it.x + it.w / 2 + fl / 2, it.y + it.d - m],
-        [it.x + m, it.y + it.d / 2 - fl / 2, it.x + m, it.y + it.d / 2 + fl / 2],
-        [it.x + it.w / 2 - fl / 2, it.y + m, it.x + it.w / 2 + fl / 2, it.y + m],
-        [it.x + it.w - m, it.y + it.d / 2 - fl / 2, it.x + it.w - m, it.y + it.d / 2 + fl / 2]
-      ][r % 4];
-      el("line", { class: "front", x1: fm[0], y1: fm[1], x2: fm[2], y2: fm[3], stroke: strokeOf(it.c) }, g);
-      const s = Math.min(16, Math.max(7, Math.min(it.w / (it.name.length * 1.1 + .5), it.d / 2.6)));
-      const vertical = it.d > it.w * 1.6 && it.w < 60;
-      const cx = it.x + it.w / 2, cy = it.y + it.d / 2;
-      const t = el("text", { x: cx, y: cy - (it.d > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
-      t.textContent = it.name;
-      if (vertical) { t.setAttribute("transform", `rotate(90 ${cx} ${cy})`); t.setAttribute("y", cy + s * .35); t.setAttribute("font-size", Math.min(16, Math.max(7, Math.min(it.d / (it.name.length * 1.1 + .5), it.w / 2.2)))); }
-      if (it.d > s * 2.6 && !vertical) {
-        const z = el("text", { x: cx, y: cy + s * 1.05, "font-size": s * .75, "text-anchor": "middle", class: "sz" }, g);
-        z.textContent = `${it.w}×${it.d}`;
-      }
-    }
+    for (const it of order)
+      drawItem(svg, it, (it.fixed ? " fixed" : "") + (sel.has(it.id) ? " sel" : "") + (it.id === blockerId ? " blocker" : "") + (drag && sel.has(it.id) ? " dragging" : ""));
     el("rect", { x: 0, y: 0, width: W, height: H, class: "wall" }, svg);
     if (marquee && marquee.moved) el("rect", { class: "marquee", x: Math.min(marquee.x0, marquee.x1), y: Math.min(marquee.y0, marquee.y1), width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }, svg);
-    renderSel(); renderList(); positionMenu();
+    renderSel(); renderList(); renderCurrent(); positionMenu();
+  }
+
+  function drawItem(root, it, cls = "") {
+    const g = el("g", { class: "item" + cls, "data-id": it.id }, root);
+    el("rect", { class: "body", x: it.x, y: it.y, width: it.w, height: it.d, rx: 2, fill: fillOf(it.c), stroke: strokeOf(it.c) }, g);
+    const fl = Math.min(it.w, it.d) * .5, r = it.r || 0, m = 4;
+    const fm = [
+      [it.x + it.w / 2 - fl / 2, it.y + it.d - m, it.x + it.w / 2 + fl / 2, it.y + it.d - m],
+      [it.x + m, it.y + it.d / 2 - fl / 2, it.x + m, it.y + it.d / 2 + fl / 2],
+      [it.x + it.w / 2 - fl / 2, it.y + m, it.x + it.w / 2 + fl / 2, it.y + m],
+      [it.x + it.w - m, it.y + it.d / 2 - fl / 2, it.x + it.w - m, it.y + it.d / 2 + fl / 2]
+    ][r % 4];
+    el("line", { class: "front", x1: fm[0], y1: fm[1], x2: fm[2], y2: fm[3], stroke: strokeOf(it.c) }, g);
+    const s = Math.min(16, Math.max(7, Math.min(it.w / (it.name.length * 1.1 + .5), it.d / 2.6)));
+    const vertical = it.d > it.w * 1.6 && it.w < 60;
+    const cx = it.x + it.w / 2, cy = it.y + it.d / 2;
+    const t = el("text", { x: cx, y: cy - (it.d > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
+    t.textContent = it.name;
+    if (vertical) { t.setAttribute("transform", `rotate(90 ${cx} ${cy})`); t.setAttribute("y", cy + s * .35); t.setAttribute("font-size", Math.min(16, Math.max(7, Math.min(it.d / (it.name.length * 1.1 + .5), it.w / 2.2)))); }
+    if (it.d > s * 2.6 && !vertical) {
+      const z = el("text", { x: cx, y: cy + s * 1.05, "font-size": s * .75, "text-anchor": "middle", class: "sz" }, g);
+      z.textContent = `${it.w}×${it.d}`;
+    }
+  }
+
+  // Read-only drawing of a saved layout: a small thumbnail (no labels) or a full preview (grid + labels).
+  function drawStatic(root, items, full) {
+    const pad = full ? 12 : 6;
+    root.setAttribute("viewBox", `${-pad} ${-pad} ${ROOM.w + pad * 2} ${ROOM.h + pad * 2}`);
+    root.textContent = "";
+    root.classList.add("mini");
+    if (full) { gridDefs(root, "v"); el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, fill: "url(#vM)" }, root); }
+    for (const it of items) {
+      if (full) drawItem(root, it);
+      else el("rect", { class: "it", x: it.x, y: it.y, width: it.w, height: it.d, fill: fillOf(it.c), stroke: strokeOf(it.c) }, root);
+    }
+    el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, class: "wall" }, root);
+  }
+
+  function renderCurrent() {
+    const box = $("current"); box.textContent = "";
+    const span = (cls, text) => { const s = document.createElement("span"); s.className = cls; s.textContent = text; box.appendChild(s); };
+    if (state.cloud) {
+      span("nm", state.cloud.name);
+      if (state.cloud.author) span("by", "・ " + state.cloud.author);
+    } else span("new", state.pendingName ? `「${state.pendingName}」のコピー（未保存）` : "未保存のレイアウト");
+    if (state.cloud && state.dirty) span("dirty", "未保存の変更あり");
+    $("updateBtn").disabled = !state.cloud;
   }
 
   // ---------- floating menu ----------
@@ -415,7 +461,7 @@
     const b = e.target.closest("button[data-id]"); if (!b) return; setSel([b.dataset.id]); render();
   });
   document.addEventListener("keydown", e => {
-    if (e.target.closest("input")) return;
+    if (e.target.closest("input") || document.querySelector("dialog[open]")) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") { e.preventDefault(); setSel(state.items.filter(i => !i.fixed).map(i => i.id)); render(); return; }
     if (e.key === "Escape") { setSel([]); render(); return; }
     const items = movableSel(); if (!items.length) return;
@@ -472,10 +518,150 @@
       btn.textContent = label; armed = setTimeout(() => { armed = 0; btn.textContent = orig; }, 3000);
     });
   }
-  confirmButton($("clearBtn"), "もう一度押すとテンプレートに戻す", () => { state = initial(); setSel([]); save(); render(); });
+  // Keeps the link to the saved layout, so the cleared result can still be saved with "更新".
+  confirmButton($("clearBtn"), "もう一度押すとテンプレートに戻す", () => { state.items = templateItems(); setSel([]); save(); render(); });
+
+  // ---------- saved layouts (Supabase) ----------
+  const fmtDate = s => new Date(s).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(fixed ? { fixed } : {}) })) });
+  const ownCount = row => itemsFrom(row.data && row.data.items).filter(i => !i.fixed).length;
+  function replaceLayout(items, cloud, pendingName, dirty) {
+    Object.assign(state, { items, cloud, pendingName, dirty });
+    setSel([]); persist(); render();
+  }
+  // Asks for a second press before an action that would discard unsaved changes.
+  function guardDirty(btn, action) {
+    if (!state.dirty || btn.dataset.armed) { delete btn.dataset.armed; action(); return; }
+    const orig = btn.textContent;
+    btn.dataset.armed = "1"; btn.textContent = "未保存の変更は失われます。もう一度押して続行";
+    setTimeout(() => { if (btn.isConnected && btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = orig; } }, 3000);
+  }
+  document.querySelectorAll("dialog [data-close]").forEach(b => b.addEventListener("click", () => b.closest("dialog").close()));
+
+  // New save: name defaults to "レイアウト<通し番号>" (the server assigns the number when the default is left as is).
+  const saveDlg = $("saveDlg");
+  let defaultName = "";
+  $("saveNewBtn").addEventListener("click", async () => {
+    $("saveErr").textContent = "";
+    $("saveSubmit").disabled = false;
+    try { $("saveAuthor").value = localStorage.getItem(STORE + "-author") || ""; } catch (e) {}
+    defaultName = "";
+    $("saveName").value = state.pendingName ? state.pendingName + "のコピー" : "";
+    $("saveName").placeholder = "空欄なら「レイアウト＋通し番号」";
+    saveDlg.showModal();
+    $("saveName").select();
+    if (!state.pendingName) {
+      try {
+        defaultName = "レイアウト" + (await LayoutDB.nextNo());
+        if (!$("saveName").value) { $("saveName").value = defaultName; $("saveName").select(); }
+      } catch (e) { /* keep the placeholder; the server still numbers it */ }
+    }
+  });
+  $("saveForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const typed = $("saveName").value.trim(), author = $("saveAuthor").value.trim();
+    const name = typed === defaultName ? "" : typed;   // untouched default → let the server number it
+    $("saveSubmit").disabled = true; $("saveErr").textContent = "";
+    try {
+      const row = await LayoutDB.create(name, author, layoutData());
+      try { localStorage.setItem(STORE + "-author", author); } catch (e2) {}
+      replaceLayout(state.items, cloudOf(row), null, false);
+      saveDlg.close();
+      toast(`「${row.name}」として保存しました。`);
+    } catch (err) {
+      $("saveErr").textContent = "保存できませんでした: " + err.message;
+    } finally { $("saveSubmit").disabled = false; }
+  });
+
+  // Update: overwrite the saved layout being edited. If someone else saved it in the meantime, a second press overwrites.
+  let forceUpdate = 0;
+  $("updateBtn").addEventListener("click", async () => {
+    const btn = $("updateBtn"); if (!state.cloud) return;
+    const force = !!forceUpdate; clearTimeout(forceUpdate); forceUpdate = 0; btn.textContent = "更新";
+    btn.disabled = true;
+    try {
+      const row = await LayoutDB.update(state.cloud.id, { data: layoutData() }, force ? null : state.cloud.updated_at);
+      if (!row) {
+        btn.textContent = "もう一度押すと上書き";
+        forceUpdate = setTimeout(() => { forceUpdate = 0; btn.textContent = "更新"; }, 5000);
+        toast("他の人が先にこのレイアウトを更新しています。もう一度押すと上書きします。");
+      } else {
+        state.cloud = cloudOf(row); state.dirty = false; persist();
+        toast(`「${row.name}」を更新しました。`);
+      }
+    } catch (err) {
+      toast("更新できませんでした: " + err.message);
+    } finally { btn.disabled = false; renderCurrent(); }
+  });
+
+  // Menu: browse everyone's saved layouts, continue editing one, or copy it as a new layout.
+  const menuDlg = $("menuDlg");
+  let rows = [], viewId = null;
+  $("menuBtn").addEventListener("click", () => { menuDlg.showModal(); loadList(); });
+  $("reloadBtn").addEventListener("click", loadList);
+  $("newLayoutBtn").addEventListener("click", e => guardDirty(e.currentTarget, () => {
+    replaceLayout(templateItems(), null, null, false); menuDlg.close(); toast("新しいレイアウトを作成しました。");
+  }));
+  async function loadList() {
+    const ul = $("savedList");
+    ul.innerHTML = '<li class="msg">読み込み中…</li>';
+    try { rows = await LayoutDB.list(); }
+    catch (err) { rows = []; ul.innerHTML = '<li class="msg err"></li>'; ul.firstChild.textContent = "読み込めませんでした: " + err.message; renderView(); return; }
+    if (!rows.some(r => r.id === viewId)) viewId = (state.cloud && rows.some(r => r.id === state.cloud.id)) ? state.cloud.id : rows[0] && rows[0].id;
+    renderSaved(); renderView();
+  }
+  function renderSaved() {
+    const ul = $("savedList"); ul.textContent = "";
+    if (!rows.length) { ul.innerHTML = '<li class="msg">まだ保存されたレイアウトはありません。「新規保存」で保存できます。</li>'; return; }
+    for (const row of rows) {
+      const li = document.createElement("li");
+      const b = document.createElement("button"); b.type = "button"; b.dataset.id = row.id;
+      if (row.id === viewId) b.setAttribute("aria-current", "true");
+      const thumb = el("svg", { class: "thumb", "aria-hidden": "true" }, b);
+      drawStatic(thumb, itemsFrom(row.data && row.data.items), false);
+      const txt = document.createElement("span");
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = row.name;
+      if (state.cloud && row.id === state.cloud.id) { const t = document.createElement("span"); t.className = "mine"; t.textContent = "編集中"; nm.appendChild(t); }
+      const meta = document.createElement("span"); meta.className = "meta";
+      meta.textContent = `${row.author || "作成者なし"} ・ ${fmtDate(row.updated_at)}`;
+      txt.append(nm, meta); b.appendChild(txt); li.appendChild(b); ul.appendChild(li);
+    }
+  }
+  $("savedList").addEventListener("click", e => {
+    const b = e.target.closest("button[data-id]"); if (!b) return;
+    viewId = b.dataset.id; renderSaved(); renderView();
+  });
+  function renderView() {
+    const v = $("menuView"); v.textContent = "";
+    const row = rows.find(r => r.id === viewId);
+    if (!row) { v.innerHTML = '<p class="empty">左の一覧からレイアウトを選ぶと、ここに表示されます。</p>'; return; }
+    const big = el("svg", { class: "big", role: "img", "aria-label": row.name + " のプレビュー" }, v);
+    drawStatic(big, itemsFrom(row.data && row.data.items), true);
+    const h = document.createElement("h3"); h.textContent = row.name;
+    const meta = document.createElement("p"); meta.className = "meta";
+    meta.textContent = `作成者: ${row.author || "なし"} ・ 家具 ${ownCount(row)}個\n作成 ${fmtDate(row.created_at)} ・ 更新 ${fmtDate(row.updated_at)}`;
+    meta.style.whiteSpace = "pre-line";
+    const acts = document.createElement("div"); acts.className = "acts";
+    const edit = document.createElement("button"); edit.type = "button"; edit.className = "btn primary"; edit.textContent = "続きから編集";
+    const copy = document.createElement("button"); copy.type = "button"; copy.className = "btn"; copy.textContent = "コピーして編集";
+    edit.onclick = () => guardDirty(edit, () => {
+      replaceLayout(itemsFrom(row.data && row.data.items), cloudOf(row), null, false);
+      menuDlg.close(); toast(`「${row.name}」を開きました。変更は「更新」で保存できます。`);
+    });
+    copy.onclick = () => guardDirty(copy, () => {
+      replaceLayout(itemsFrom(row.data && row.data.items), null, row.name, true);
+      menuDlg.close(); toast(`「${row.name}」をコピーしました。「新規保存」で別のレイアウトとして保存できます。`);
+    });
+    acts.append(edit, copy);
+    v.append(h, meta, acts);
+  }
 
   let toastT = 0;
-  function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 2600); }
+  // A modal dialog sits in the top layer, so the toast is moved into it while one is open.
+  function toast(msg) {
+    const t = $("toast"); (document.querySelector("dialog[open]") || document.body).appendChild(t);
+    t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 2600);
+  }
 
   render(); renderPreview();
 })();
