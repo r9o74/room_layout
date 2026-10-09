@@ -1,63 +1,107 @@
 <!doctype html>
 <html lang="ja">
+
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>研究室レイアウトシミュレータ</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>研究室レイアウト</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
   <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <main class="app">
-    <section class="layout-pane" aria-label="レイアウト">
-      <header class="layout-header">
+  <div class="app">
+    <section class="plan" aria-label="レイアウト">
+      <div class="bar">
         <h1>研究室レイアウト</h1>
-        <p id="status" class="status" role="status">家具をドラッグして移動できます</p>
-      </header>
-      <div class="canvas-wrap">
-        <svg id="room" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="roomsize" id="roomsize"></div>
+        <div class="spacer"></div>
+        <button class="btn small danger" id="clearBtn" type="button">すべて削除</button>
       </div>
+      <div class="sheet" id="sheet">
+        <svg id="plan" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="fmenu" id="fmenu" hidden>
+          <div class="fmenu-row" role="toolbar" aria-label="選択中の家具の操作">
+            <button type="button" data-act="rotL" data-movable title="左に90°回転 (Shift+R)" aria-label="左に90°回転"><svg
+                viewBox="0 0 24 24">
+                <path d="M4 12a8 8 0 1 0 3-6.2M4 4v5h5" />
+              </svg></button>
+            <button type="button" data-act="rotR" data-movable title="右に90°回転 (R)" aria-label="右に90°回転"><svg
+                viewBox="0 0 24 24">
+                <path d="M20 12a8 8 0 1 1-3-6.2M20 4v5h-5" />
+              </svg></button>
+            <button type="button" data-act="size" data-movable data-single title="サイズを変更" aria-label="サイズを変更"
+              aria-expanded="false"><svg viewBox="0 0 24 24">
+                <path d="M4 14v6h6M20 10V4h-6M4 20l7-7M20 4l-7 7" />
+              </svg></button>
+            <button type="button" data-act="dup" data-movable title="複製" aria-label="複製"><svg viewBox="0 0 24 24">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
+              </svg></button>
+            <button type="button" data-act="color" title="色を変更" aria-label="色を変更" aria-expanded="false"><span
+                class="cdot" id="fmenuDot"></span></button>
+          </div>
+          <div class="fmenu-colors" id="fmenuColors" hidden></div>
+          <div class="fmenu-size" id="fmenuSize" hidden>
+            <label>幅 (cm)<input id="sW" type="number" min="10" max="1000" step="5"></label>
+            <span class="x">×</span>
+            <label>奥行 (cm)<input id="sD" type="number" min="10" max="1000" step="5"></label>
+            <button type="button" class="btn primary small" data-act="applySize">適用</button>
+            <p class="err" id="sErr" role="alert"></p>
+          </div>
+        </div>
+        <div class="hint">ドラッグで移動 ・ Shift+クリックで複数選択 ・ 空白をドラッグで範囲選択 ・ R / Shift+R で右・左回転 ・ 矢印キーで 10cm 移動 ・ Delete で削除
+        </div>
+      </div>
+      <div class="selbar" id="selbar"></div>
     </section>
 
-    <aside class="side-pane" aria-label="家具の追加">
-      <section class="card">
-        <h2>部屋のサイズ</h2>
-        <div class="row">
-          <label>幅 (cm)<input id="room-w" type="number" min="100" step="10" value="800"></label>
-          <label>奥行 (cm)<input id="room-d" type="number" min="100" step="10" value="600"></label>
+    <aside class="side" aria-label="家具の追加">
+      <div>
+        <h2>家具を追加</h2>
+      </div>
+      <form class="form" id="addForm" novalidate>
+        <div>
+          <span class="label">よく使うもの</span>
+          <div class="presets" id="presets"></div>
         </div>
-        <button id="room-apply" type="button">適用</button>
-      </section>
+        <div>
+          <label class="label" for="fName">名称</label>
+          <input id="fName" type="text" maxlength="24" value="机" autocomplete="off">
+        </div>
+        <div class="dims">
+          <div>
+            <label class="label" for="fW">幅</label>
+            <div class="unit"><input id="fW" type="number" min="10" max="1000" step="5" value="120"></div>
+          </div>
+          <span class="x">×</span>
+          <div>
+            <label class="label" for="fD">奥行</label>
+            <div class="unit"><input id="fD" type="number" min="10" max="1000" step="5" value="60"></div>
+          </div>
+        </div>
+        <div>
+          <span class="label">色</span>
+          <div class="swatches" id="swatches"></div>
+        </div>
+        <div>
+          <span class="label">プレビュー</span>
+          <div class="preview"><svg id="preview" xmlns="http://www.w3.org/2000/svg"></svg></div>
 
-      <section class="card">
-        <h2>家具の追加</h2>
-        <div class="presets" id="presets"></div>
-        <label>名称<input id="f-name" type="text" maxlength="20" value="机"></label>
-        <div class="row">
-          <label>幅 (cm)<input id="f-w" type="number" min="5" step="5" value="120"></label>
-          <label>奥行 (cm)<input id="f-d" type="number" min="5" step="5" value="60"></label>
-          <label>色<input id="f-color" type="color" value="#9ec5e8"></label>
         </div>
-        <div class="preview-box">
-          <svg id="preview" xmlns="http://www.w3.org/2000/svg" aria-label="プレビュー"></svg>
-        </div>
-        <button id="f-add" type="button" class="primary">部屋に追加</button>
-        <p id="add-msg" class="msg"></p>
-      </section>
-
-      <section class="card" id="selected-card" hidden>
-        <h2>選択中の家具</h2>
-        <p id="sel-info" class="sel-info"></p>
-        <div class="row">
-          <button id="sel-rotate" type="button">90°回転 (R)</button>
-          <button id="sel-delete" type="button" class="danger">削除 (Del)</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <button id="reset" type="button" class="danger">すべて削除</button>
-      </section>
+        <p class="err" id="formErr" role="alert"></p>
+        <button class="btn primary" type="submit">レイアウトに追加</button>
+      </form>
+      <div>
+        <h2>配置中の家具</h2>
+        <ul class="list" id="list"></ul>
+      </div>
     </aside>
-  </main>
+  </div>
+  <div class="toast" id="toast" hidden></div>
   <script src="app.js"></script>
 </body>
+
 </html>
