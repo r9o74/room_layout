@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>研究室レイアウトシミュレータ</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <section class="layout-pane" aria-label="レイアウト">
+      <header class="layout-header">
+        <h1>研究室レイアウト</h1>
+        <p id="status" class="status" role="status">家具をドラッグして移動できます</p>
+      </header>
+      <div class="canvas-wrap">
+        <svg id="room" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </section>
+
+    <aside class="side-pane" aria-label="家具の追加">
+      <section class="card">
+        <h2>部屋のサイズ</h2>
+        <div class="row">
+          <label>幅 (cm)<input id="room-w" type="number" min="100" step="10" value="800"></label>
+          <label>奥行 (cm)<input id="room-d" type="number" min="100" step="10" value="600"></label>
+        </div>
+        <button id="room-apply" type="button">適用</button>
+      </section>
+
+      <section class="card">
+        <h2>家具の追加</h2>
+        <div class="presets" id="presets"></div>
+        <label>名称<input id="f-name" type="text" maxlength="20" value="机"></label>
+        <div class="row">
+          <label>幅 (cm)<input id="f-w" type="number" min="5" step="5" value="120"></label>
+          <label>奥行 (cm)<input id="f-d" type="number" min="5" step="5" value="60"></label>
+          <label>色<input id="f-color" type="color" value="#9ec5e8"></label>
+        </div>
+        <div class="preview-box">
+          <svg id="preview" xmlns="http://www.w3.org/2000/svg" aria-label="プレビュー"></svg>
+        </div>
+        <button id="f-add" type="button" class="primary">部屋に追加</button>
+        <p id="add-msg" class="msg"></p>
+      </section>
+
+      <section class="card" id="selected-card" hidden>
+        <h2>選択中の家具</h2>
+        <p id="sel-info" class="sel-info"></p>
+        <div class="row">
+          <button id="sel-rotate" type="button">90°回転 (R)</button>
+          <button id="sel-delete" type="button" class="danger">削除 (Del)</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <button id="reset" type="button" class="danger">すべて削除</button>
+      </section>
+    </aside>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
