@@ -6,7 +6,8 @@
   const PRESETS = [
     ["机", 120, 60, 0], ["椅子", 50, 50, 4], ["本棚", 90, 30, 2], ["ロッカー", 90, 50, 4],
     ["実験台", 180, 75, 1], ["ミーティングテーブル", 180, 90, 2], ["ホワイトボード", 180, 20, 3],
-    ["プリンタ", 60, 50, 4], ["冷蔵庫", 60, 65, 5], ["ソファ", 160, 80, 3]
+    ["プリンタ", 60, 50, 4], ["冷蔵庫", 60, 65, 5], ["ソファ", 160, 80, 3],
+    ["丸テーブル", 90, 90, 2, "circle"], ["丸椅子", 40, 40, 4, "circle"]
   ];
   // Template: fixed furniture. Cannot be moved, rotated, duplicated, resized or deleted; only the color can change.
   // This is the initial layout and what "すべて削除" returns to.
@@ -29,6 +30,7 @@
   let blockerId = null, blockerTimer = 0;
   let drag = null;
   let fColor = 0;
+  let fShape = "rect";   // shape chosen in the add form: "rect" | "circle" | "tri"
 
   const $ = id => document.getElementById(id);
   const svg = $("plan");
@@ -47,8 +49,9 @@
     const own = arr.filter(i => !i.fixed).map(i => ({
       id: typeof i.id === "string" && i.id && !/^t\d+$/.test(i.id) ? i.id.slice(0, 32) : uid(),
       name: String(i.name ?? "").slice(0, 24), x: num(i.x), y: num(i.y), w: num(i.w), d: num(i.d),
-      c: color(i.c), r: ((num(i.r) % 4) + 4) % 4
-    })).filter(i => i.name && i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
+      c: color(i.c), r: ((num(i.r) % 4) + 4) % 4,
+      ...(i.s === "circle" || i.s === "tri" ? { s: i.s } : {})
+    })).map(i => (i.s === "circle" ? { ...i, d: i.w } : i)).filter(i => i.name && i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
     return [...fixed, ...own];
   }
   function cloudOf(row) { return { id: row.id, name: row.name, author: row.author, updated_at: row.updated_at }; }
@@ -77,13 +80,53 @@
   }
 
   // ---------- collision ----------
-  const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.d && b.y < a.y + a.d;
+  // Shapes: rect (default), circle (w = d = diameter), tri (right triangle whose legs are the box edges).
+  // For a triangle, r (quarter turns clockwise) decides which corner holds the right angle: 0 = bottom-left, 1 = top-left, 2 = top-right, 3 = bottom-right.
+  const EPS = 1e-6;
+  const shapeOf = o => (o.s === "circle" ? "circle" : o.s === "tri" ? "tri" : "rect");
+  function polyOf(o) {
+    const { x, y, w, d } = o, x2 = x + w, y2 = y + d;
+    if (shapeOf(o) === "tri") {
+      return [[[x, y2], [x2, y2], [x, y]], [[x, y], [x2, y], [x, y2]], [[x2, y], [x, y], [x2, y2]], [[x2, y2], [x, y2], [x2, y]]][((o.r || 0) % 4 + 4) % 4];
+    }
+    return [[x, y], [x2, y], [x2, y2], [x, y2]];
+  }
+  // Separating-axis test for convex shapes; shapes that only touch do not overlap.
+  function convexOverlap(a, b) {
+    const sa = shapeOf(a) === "circle" ? { c: [a.x + a.w / 2, a.y + a.d / 2], rad: a.w / 2 } : { pts: polyOf(a) };
+    const sb = shapeOf(b) === "circle" ? { c: [b.x + b.w / 2, b.y + b.d / 2], rad: b.w / 2 } : { pts: polyOf(b) };
+    const axes = [];
+    for (const sh of [sa, sb]) if (sh.pts) sh.pts.forEach((p, i) => {
+      const q = sh.pts[(i + 1) % sh.pts.length], nx = q[1] - p[1], ny = p[0] - q[0], l = Math.hypot(nx, ny);
+      axes.push([nx / l, ny / l]);
+    });
+    for (const [c, other] of [[sa, sb], [sb, sa]]) if (c.c && other.pts) {   // circle vs polygon: axis to the nearest vertex
+      let best = null, bd = Infinity;
+      for (const p of other.pts) { const dd = Math.hypot(p[0] - c.c[0], p[1] - c.c[1]); if (dd < bd) { bd = dd; best = p; } }
+      const l = bd || 1; axes.push([(best[0] - c.c[0]) / l, (best[1] - c.c[1]) / l]);
+    }
+    const proj = (sh, [ax, ay]) => {
+      if (sh.c) { const m = sh.c[0] * ax + sh.c[1] * ay; return [m - sh.rad, m + sh.rad]; }
+      const v = sh.pts.map(p => p[0] * ax + p[1] * ay); return [Math.min(...v), Math.max(...v)];
+    };
+    return axes.every(ax => { const [a0, a1] = proj(sa, ax), [b0, b1] = proj(sb, ax); return a1 - b0 > EPS && b1 - a0 > EPS; });
+  }
+  function overlap(a, b) {
+    if (!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.d && b.y < a.y + a.d)) return false;   // boxes apart
+    const ka = shapeOf(a), kb = shapeOf(b);
+    if (ka === "rect" && kb === "rect") return true;
+    if (ka === "circle" && kb === "circle") {
+      const dx = a.x + a.w / 2 - (b.x + b.w / 2), dy = a.y + a.d / 2 - (b.y + b.d / 2), R = (a.w + b.w) / 2;
+      return dx * dx + dy * dy < R * R - EPS;
+    }
+    return convexOverlap(a, b);
+  }
   function blockerFor(r, ex) {
     if (r.x < 0 || r.y < 0 || r.x + r.w > state.room.w || r.y + r.d > state.room.h) return { wall: true };
     const o = state.items.find(o => !ex.has(o.id) && overlap(r, o));
     return o ? { item: o } : null;
   }
-  const hit = (item, x, y, w = item.w, d = item.d) => blockerFor({ x, y, w, d }, new Set([item.id]));
+  const hit = (item, x, y, w = item.w, d = item.d) => blockerFor({ x, y, w, d, s: item.s, r: item.r }, new Set([item.id]));
   const bounds = items => ({
     minX: Math.min(...items.map(m => m.x)), maxX: Math.max(...items.map(m => m.x + m.w)),
     minY: Math.min(...items.map(m => m.y)), maxY: Math.max(...items.map(m => m.y + m.d))
@@ -96,7 +139,7 @@
     rx = Math.max(-minX, Math.min(state.room.w - maxX, rx));
     ry = Math.max(-minY, Math.min(state.room.h - maxY, ry));
     const free = (dx, dy) => {
-      for (const m of members) { const h = blockerFor({ x: m.x + dx, y: m.y + dy, w: m.w, d: m.d }, ex); if (h) return h; }
+      for (const m of members) { const h = blockerFor({ x: m.x + dx, y: m.y + dy, w: m.w, d: m.d, s: m.s, r: m.r }, ex); if (h) return h; }
       return null;
     };
     let ax = 0, ay = 0, blocker = null;
@@ -109,10 +152,10 @@
     members.forEach(m => { m.x += ax; m.y += ay; });
     return { ax, ay, blocker };
   }
-  function findSpot(w, d) {
+  function findSpot(w, d, s, r) {
     for (let y = 0; y + d <= state.room.h; y += 10)
       for (let x = 0; x + w <= state.room.w; x += 10)
-        if (!hit({ id: null }, x, y, w, d)) return { x, y };
+        if (!hit({ id: null, s, r }, x, y, w, d)) return { x, y };
     return null;
   }
   function flashBlocker(b) {
@@ -171,26 +214,43 @@
     renderSel(); renderList(); renderCurrent(); positionMenu();
   }
 
+  // The visible body of a piece: rect, circle or right triangle.
+  function bodyEl(parent, it, attrs) {
+    const k = shapeOf(it);
+    if (k === "circle") return el("circle", { cx: it.x + it.w / 2, cy: it.y + it.d / 2, r: it.w / 2, ...attrs }, parent);
+    if (k === "tri") return el("polygon", { points: polyOf(it).map(p => p.join(",")).join(" "), "stroke-linejoin": "round", ...attrs }, parent);
+    return el("rect", { x: it.x, y: it.y, width: it.w, height: it.d, rx: 2, ...attrs }, parent);
+  }
+
   function drawItem(root, it, cls = "") {
     const g = el("g", { class: "item" + cls, "data-id": it.id }, root);
-    el("rect", { class: "body", x: it.x, y: it.y, width: it.w, height: it.d, rx: 2, fill: fillOf(it.c), stroke: strokeOf(it.c) }, g);
-    const fl = Math.min(it.w, it.d) * .5, r = it.r || 0, m = 4;
-    const fm = [
-      [it.x + it.w / 2 - fl / 2, it.y + it.d - m, it.x + it.w / 2 + fl / 2, it.y + it.d - m],
-      [it.x + m, it.y + it.d / 2 - fl / 2, it.x + m, it.y + it.d / 2 + fl / 2],
-      [it.x + it.w / 2 - fl / 2, it.y + m, it.x + it.w / 2 + fl / 2, it.y + m],
-      [it.x + it.w - m, it.y + it.d / 2 - fl / 2, it.x + it.w - m, it.y + it.d / 2 + fl / 2]
-    ][r % 4];
-    el("line", { class: "front", x1: fm[0], y1: fm[1], x2: fm[2], y2: fm[3], stroke: strokeOf(it.c) }, g);
-    const s = Math.min(16, Math.max(7, Math.min(it.w / (it.name.length * 1.1 + .5), it.d / 2.6)));
-    const vertical = it.d > it.w * 1.6 && it.w < 60;
-    const cx = it.x + it.w / 2, cy = it.y + it.d / 2;
-    const t = el("text", { x: cx, y: cy - (it.d > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
+    bodyEl(g, it, { class: "body", fill: fillOf(it.c), stroke: strokeOf(it.c) });
+    const kind = shapeOf(it);
+    if (kind === "rect") {   // small tick on the "front" edge
+      const fl = Math.min(it.w, it.d) * .5, r = it.r || 0, m = 4;
+      const fm = [
+        [it.x + it.w / 2 - fl / 2, it.y + it.d - m, it.x + it.w / 2 + fl / 2, it.y + it.d - m],
+        [it.x + m, it.y + it.d / 2 - fl / 2, it.x + m, it.y + it.d / 2 + fl / 2],
+        [it.x + it.w / 2 - fl / 2, it.y + m, it.x + it.w / 2 + fl / 2, it.y + m],
+        [it.x + it.w - m, it.y + it.d / 2 - fl / 2, it.x + it.w - m, it.y + it.d / 2 + fl / 2]
+      ][r % 4];
+      el("line", { class: "front", x1: fm[0], y1: fm[1], x2: fm[2], y2: fm[3], stroke: strokeOf(it.c) }, g);
+    }
+    // label area: the middle of the shape, shrunk to what fits inside a circle / triangle
+    let cx = it.x + it.w / 2, cy = it.y + it.d / 2, aw = it.w, ah = it.d;
+    if (kind === "circle") { aw = it.w * .72; ah = it.d * .6; }
+    if (kind === "tri") {
+      const p = polyOf(it); cx = (p[0][0] + p[1][0] + p[2][0]) / 3; cy = (p[0][1] + p[1][1] + p[2][1]) / 3;
+      aw = Math.min(it.w, it.d) * .55; ah = Math.min(it.w, it.d) * .5;
+    }
+    const s = Math.min(16, Math.max(7, Math.min(aw / (it.name.length * 1.1 + .5), ah / 2.6)));
+    const vertical = kind === "rect" && it.d > it.w * 1.6 && it.w < 60;
+    const t = el("text", { x: cx, y: cy - (ah > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
     t.textContent = it.name;
     if (vertical) { t.setAttribute("transform", `rotate(90 ${cx} ${cy})`); t.setAttribute("y", cy + s * .35); t.setAttribute("font-size", Math.min(16, Math.max(7, Math.min(it.d / (it.name.length * 1.1 + .5), it.w / 2.2)))); }
-    if (it.d > s * 2.6 && !vertical) {
+    if (ah > s * 2.6 && !vertical) {
       const z = el("text", { x: cx, y: cy + s * 1.05, "font-size": s * .75, "text-anchor": "middle", class: "sz" }, g);
-      z.textContent = `${it.w}×${it.d}`;
+      z.textContent = kind === "circle" ? `R${it.w / 2}` : `${it.w}×${it.d}`;
     }
   }
 
@@ -203,7 +263,7 @@
     if (full) { gridDefs(root, "v"); el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, fill: "url(#vM)" }, root); }
     for (const it of items) {
       if (full) drawItem(root, it);
-      else el("rect", { class: "it", x: it.x, y: it.y, width: it.w, height: it.d, fill: fillOf(it.c), stroke: strokeOf(it.c) }, root);
+      else bodyEl(root, it, { class: "it", fill: fillOf(it.c), stroke: strokeOf(it.c) });
     }
     el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, class: "wall" }, root);
   }
@@ -234,7 +294,8 @@
     if ((!one || !movable) && panel === "size") panel = null;
     fmenu.hidden = false;
     fmenu.querySelectorAll("[data-act]").forEach(b => {
-      b.hidden = (b.hasAttribute("data-single") && !one) || (b.hasAttribute("data-movable") && !movable);
+      b.hidden = (b.hasAttribute("data-single") && !one) || (b.hasAttribute("data-movable") && !movable) ||
+        (/^rot/.test(b.dataset.act) && items.every(i => i.s === "circle"));
     });
     const dot = $("fmenuDot"); dot.style.background = fillOf(items[0].c); dot.style.borderColor = strokeOf(items[0].c);
     [...fcolors.children].forEach(b => (b.firstChild.dataset.on = items.every(i => i.c === +b.dataset.color)));
@@ -255,16 +316,25 @@
   }
   new ResizeObserver(positionMenu).observe($("sheet"));
   fmenu.addEventListener("pointerdown", e => e.stopPropagation());
+  // Fills the size panel for one piece: width x depth, radius for a circle, or the two legs of a triangle.
+  function openSizePanel(it) {
+    const k = shapeOf(it);
+    $("sWLabel").textContent = k === "circle" ? "半径 (cm)" : k === "tri" ? "辺A・横 (cm)" : "幅 (cm)";
+    $("sDLabel").textContent = k === "tri" ? "辺B・縦 (cm)" : "奥行 (cm)";
+    $("sX").hidden = $("sDWrap").hidden = k === "circle";
+    $("sW").value = k === "circle" ? it.w / 2 : it.w; $("sD").value = it.d; $("sErr").textContent = "";
+  }
   function resize(it) {
     if (it.fixed) return;
-    const w = snap(+$("sW").value), d = snap(+$("sD").value), err = $("sErr");
-    if (!(w >= 10 && d >= 10 && w <= 1000 && d <= 1000)) { err.textContent = "幅と奥行は 10〜1000cm で入力してください。"; return; }
+    const circle = it.s === "circle", err = $("sErr");
+    const w = snap(circle ? 2 * +$("sW").value : +$("sW").value), d = circle ? w : snap(+$("sD").value);
+    if (!(w >= 10 && d >= 10 && w <= 1000 && d <= 1000)) { err.textContent = circle ? "半径は 5〜500cm で入力してください。" : "寸法は 10〜1000cm で入力してください。"; return; }
     if (w > state.room.w || d > state.room.h) { err.textContent = "部屋より大きいため変更できません。"; return; }
     const x = Math.min(it.x, state.room.w - w), y = Math.min(it.y, state.room.h - d);
     const h = hit(it, x, y, w, d);
     if (h && h.item) { flashBlocker(h.item); render(); err.textContent = `「${h.item.name}」と重なるため変更できません。`; return; }
     Object.assign(it, { x, y, w, d }); err.textContent = "";
-    $("sW").value = w; $("sD").value = d; save(); render();
+    openSizePanel(it); save(); render();
   }
   fmenu.addEventListener("click", e => {
     const items = selItems(); if (!items.length) return;
@@ -278,7 +348,7 @@
       case "size":
         if (!one) break;
         if (panel === "size") panel = null;
-        else { panel = "size"; $("sW").value = one.w; $("sD").value = one.d; $("sErr").textContent = ""; }
+        else { panel = "size"; openSizePanel(one); }
         positionMenu(); if (panel === "size") { $("sW").focus(); $("sW").select(); }
         break;
       case "applySize": if (one) resize(one); break;
@@ -324,8 +394,9 @@
   // ---------- preview ----------
   function renderPreview() {
     const p = $("preview"); p.textContent = "";
-    const w = +$("fW").value, d = +$("fD").value;
-    const ok = w >= 10 && d >= 10 && w <= 1000 && d <= 1000;
+    const circle = fShape === "circle";
+    const w = circle ? 2 * +$("fW").value : +$("fW").value, d = circle ? w : +$("fD").value;
+    const ok = circle ? (w >= 10 && w <= 1000) : (w >= 10 && d >= 10 && w <= 1000 && d <= 1000);
     const pw = ok ? w : 100, pd = ok ? d : 100;
     const person = 45, gap = 30, m = 34;
     const vw = Math.max(pw + gap + person, 120) + m * 2, vh = Math.max(pd, 60) + m * 2;
@@ -338,17 +409,25 @@
     const fs = Math.max(9, VW / 34);
     if (!ok) {
       const t = el("text", { x: VW / 2, y: VH / 2, "text-anchor": "middle", "font-size": fs, fill: "var(--danger)" }, p);
-      t.textContent = "サイズは 10〜1000cm で入力してください"; return;
+      t.textContent = circle ? "半径は 5〜500cm で入力してください" : "サイズは 10〜1000cm で入力してください"; return;
     }
-    el("rect", { x: ox, y: oy, width: pw, height: pd, rx: 2, fill: fillOf(fColor), stroke: strokeOf(fColor), "stroke-width": Math.max(1, VW / 300) }, p);
-    const nm = el("text", { x: ox + pw / 2, y: oy + pd / 2 + fs * .35, "text-anchor": "middle", "font-size": Math.min(fs * 1.1, pw / (($("fName").value.length || 1) * 1.1 + .5), pd / 1.8), fill: "var(--ink)", "font-weight": 500, "font-family": "var(--font-body)" }, p);
+    const shape = { x: ox, y: oy, w: pw, d: pd, s: fShape, r: 0 };
+    bodyEl(p, shape, { fill: fillOf(fColor), stroke: strokeOf(fColor), "stroke-width": Math.max(1, VW / 300) });
+    // name sits in the middle of the shape (inside the triangle's centroid for a triangle)
+    let lx = ox + pw / 2, ly = oy + pd / 2, aw = pw, ah = pd;
+    if (circle) { aw = pw * .72; ah = pd * .6; }
+    if (fShape === "tri") { const q = polyOf(shape); lx = (q[0][0] + q[1][0] + q[2][0]) / 3; ly = (q[0][1] + q[1][1] + q[2][1]) / 3; aw = Math.min(pw, pd) * .55; ah = Math.min(pw, pd) * .5; }
+    const nm = el("text", { x: lx, y: ly + fs * .35, "text-anchor": "middle", "font-size": Math.min(fs * 1.1, aw / (($("fName").value.length || 1) * 1.1 + .5), ah / 1.8), fill: "var(--ink)", "font-weight": 500, "font-family": "var(--font-body)" }, p);
     nm.textContent = $("fName").value || "(名称未入力)";
-    // dimension lines
+    // dimension lines (a circle only needs its radius)
     const sw = Math.max(.8, VW / 400);
     el("line", { x1: ox, y1: oy - fs * .9, x2: ox + pw, y2: oy - fs * .9, stroke: "var(--muted)", "stroke-width": sw }, p);
-    el("line", { x1: ox - fs * .9, y1: oy, x2: ox - fs * .9, y2: oy + pd, stroke: "var(--muted)", "stroke-width": sw }, p);
-    const tw = el("text", { x: ox + pw / 2, y: oy - fs * 1.3, "text-anchor": "middle", "font-size": fs * .9, class: "dim" }, p); tw.textContent = w + "cm";
-    const td = el("text", { x: ox - fs * 1.3, y: oy + pd / 2, "text-anchor": "middle", "font-size": fs * .9, class: "dim", transform: `rotate(-90 ${ox - fs * 1.3} ${oy + pd / 2})` }, p); td.textContent = d + "cm";
+    const tw = el("text", { x: ox + pw / 2, y: oy - fs * 1.3, "text-anchor": "middle", "font-size": fs * .9, class: "dim" }, p);
+    tw.textContent = circle ? `直径 ${w}cm（半径 ${w / 2}cm）` : w + "cm";
+    if (!circle) {
+      el("line", { x1: ox - fs * .9, y1: oy, x2: ox - fs * .9, y2: oy + pd, stroke: "var(--muted)", "stroke-width": sw }, p);
+      const td = el("text", { x: ox - fs * 1.3, y: oy + pd / 2, "text-anchor": "middle", "font-size": fs * .9, class: "dim", transform: `rotate(-90 ${ox - fs * 1.3} ${oy + pd / 2})` }, p); td.textContent = d + "cm";
+    }
     // person for scale (top view: shoulders + head)
     const px = ox + pw + gap + person / 2, py = oy + pd / 2;
     el("ellipse", { cx: px, cy: py, rx: person / 2, ry: 12, fill: "none", stroke: "var(--muted)", "stroke-width": sw, "stroke-dasharray": "3 2" }, p);
@@ -412,13 +491,14 @@
   // Rotate the selection 90° as one rigid group (dir: 1 = right/clockwise, -1 = left).
   // Keeps the group's center, falling back to its current top-left corner; fails if it would hit a wall or other furniture.
   function rotate(items, dir = 1) {
+    if (items.every(i => i.s === "circle")) return;   // a circle looks the same turned either way
     const ex = new Set(items.map(i => i.id));
     const { minX, maxX, minY, maxY } = bounds(items);
     const W = maxX - minX, H = maxY - minY;   // after rotating, the group is H wide and W deep
     if (H > state.room.w || W > state.room.h) { toast("回転すると壁からはみ出すため、回転できません。"); return; }
     const cx = x => Math.max(0, Math.min(state.room.w - H, x)), cy = y => Math.max(0, Math.min(state.room.h - W, y));
     const place = (gx, gy) => items.map(it => ({
-      it, w: it.d, d: it.w,
+      it, w: it.d, d: it.w, s: it.s, r: ((it.r || 0) + dir + 4) % 4,
       x: dir > 0 ? gx + (maxY - it.y - it.d) : gx + (it.y - minY),
       y: dir > 0 ? gy + (it.x - minX) : gy + (maxX - it.x - it.w)
     }));
@@ -437,15 +517,27 @@
     else toast("回転すると壁からはみ出すため、回転できません。");
     render();
   }
+  // Duplicate the selection as one group, shifted by a single offset so the layout between the copies is preserved.
+  // The offset is chosen to place as many copies as possible; among equals, the one closest to the original wins
+  // (so a single item lands right beside its source). Copies that would collide with anything are skipped.
   function duplicate(items) {
-    const copies = [];
-    for (const it of items) {
-      const s = findSpot(it.w, it.d);
-      if (!s) break;
-      const n = { ...it, id: uid(), ...s }; state.items.push(n); copies.push(n.id);
+    const { minX, maxX, minY, maxY } = bounds(items);
+    let best = null;   // { dx, dy, fit: items that can be placed, dist }
+    for (let dy = -minY; dy <= state.room.h - maxY; dy += SNAP) {
+      for (let dx = -minX; dx <= state.room.w - maxX; dx += SNAP) {
+        if (!dx && !dy) continue;
+        const dist = dx * dx + dy * dy;
+        if (best && best.fit.length === items.length && dist >= best.dist) continue;
+        const fit = items.filter(it => !blockerFor({ x: it.x + dx, y: it.y + dy, w: it.w, d: it.d, s: it.s, r: it.r }, new Set()));
+        if (!fit.length) continue;
+        if (!best || fit.length > best.fit.length || (fit.length === best.fit.length && dist < best.dist)) best = { dx, dy, fit, dist };
+      }
     }
-    if (copies.length < items.length) toast(copies.length ? "空きスペースが足りず、一部だけ複製しました。" : "空きスペースがないため、複製できません。");
-    if (copies.length) setSel(copies);
+    if (!best) { toast("空きスペースがないため、複製できません。"); return; }
+    const copies = best.fit.map(it => ({ ...it, id: uid(), x: it.x + best.dx, y: it.y + best.dy }));
+    state.items.push(...copies);
+    setSel(copies.map(c => c.id));
+    if (copies.length < items.length) toast(`干渉する家具は複製せず、${items.length}個中${copies.length}個を複製しました。`);
     save(); render();
   }
   function remove(items) {
@@ -473,12 +565,45 @@
   });
 
   // ---------- add form ----------
+  // Shape selector: the size inputs change with the shape (width x depth / radius / the two legs of a right triangle).
+  function setShape(k) {
+    const a = +$("fW").value, b = +$("fD").value;
+    if (k === "circle" && fShape !== "circle") $("fW").value = Math.max(5, Math.round(Math.min(a, b) / 2));
+    if (k !== "circle" && fShape === "circle") { $("fW").value = $("fD").value = a * 2; }
+    fShape = k;
+    $("shapeSeg").querySelectorAll("button").forEach(btn => btn.setAttribute("aria-pressed", btn.dataset.shape === k));
+    $("fWLabel").textContent = k === "circle" ? "半径" : k === "tri" ? "辺A（横）" : "幅";
+    $("fDLabel").textContent = k === "tri" ? "辺B（縦）" : "奥行";
+    $("dims").classList.toggle("single", k === "circle");
+    $("fX").hidden = $("fDWrap").hidden = k === "circle";
+    $("shapeHint").hidden = k !== "tri";
+    $("shapeHint").textContent = "直角をはさむ2辺の長さを入力します。向きは配置後の回転で変えられます。";
+    $("formErr").textContent = "";
+    renderPreview();
+  }
+  $("shapeSeg").addEventListener("click", e => { const b = e.target.closest("[data-shape]"); if (b) setShape(b.dataset.shape); });
+  // Size entered in the form as { s, w, d } (bounding box); null + message when invalid.
+  function formShape() {
+    const a = +$("fW").value, b = +$("fD").value;
+    if (fShape === "circle") {
+      if (!(a >= 5 && a <= 500)) return { err: "半径は 5〜500cm で入力してください。" };
+      const w = snap(2 * a); return { s: "circle", w, d: w };
+    }
+    const w = snap(a), d = snap(b);
+    if (!(w >= 10 && d >= 10 && w <= 1000 && d <= 1000)) return { err: "幅と奥行は 10〜1000cm で入力してください。" };
+    return { s: fShape, w, d };
+  }
+
   const presets = $("presets");
-  for (const [n, w, d, c] of PRESETS) {
+  for (const [n, w, d, c, shape] of PRESETS) {
     const b = document.createElement("button"); b.type = "button"; b.className = "chip";
     b.textContent = n;
-    b.title = `${w} × ${d} cm`;
-    b.onclick = () => { $("fName").value = n; $("fW").value = w; $("fD").value = d; setColor(c); $("formErr").textContent = ""; renderPreview(); };
+    b.title = shape === "circle" ? `半径 ${w / 2} cm` : `${w} × ${d} cm`;
+    b.onclick = () => {
+      setShape(shape || "rect");
+      $("fName").value = n; $("fW").value = shape === "circle" ? w / 2 : w; $("fD").value = d; setColor(c);
+      $("formErr").textContent = ""; renderPreview();
+    };
     presets.appendChild(b);
   }
   const sw = $("swatches");
@@ -494,17 +619,18 @@
 
   $("addForm").addEventListener("submit", e => {
     e.preventDefault();
-    const name = $("fName").value.trim(), w = snap(+$("fW").value), d = snap(+$("fD").value);
+    const name = $("fName").value.trim(), f = formShape();
     const err = $("formErr");
     if (!name) return (err.textContent = "名称を入力してください。");
-    if (!(w >= 10 && d >= 10 && w <= 1000 && d <= 1000)) return (err.textContent = "幅と奥行は 10〜1000cm で入力してください。");
+    if (f.err) return (err.textContent = f.err);
+    const { w, d } = f, k = f.s === "rect" ? undefined : f.s;
     if ((w > state.room.w || d > state.room.h) && (d > state.room.w || w > state.room.h)) return (err.textContent = "部屋より大きいため配置できません。");
-    let s = findSpot(w, d), W = w, D = d;
-    if (!s) { s = findSpot(d, w); W = d; D = w; }
+    let s = findSpot(w, d, k, 0), W = w, D = d, r = 0;
+    if (!s && f.s !== "circle") { s = findSpot(d, w, k, 1); W = d; D = w; r = 1; }   // otherwise try it turned 90°
     if (!s) return (err.textContent = "空いているスペースがありません。家具を動かしてから追加してください。");
-    const it = { id: uid(), name, w: W, d: D, x: s.x, y: s.y, c: fColor };
+    const it = { id: uid(), name, w: W, d: D, x: s.x, y: s.y, c: fColor, r, ...(k ? { s: k } : {}) };
     state.items.push(it); setSel([it.id]); save(); render();
-    toast(`「${name}」を追加しました。` + (W !== w ? "（空きの都合で90°回転して配置）" : ""));
+    toast(`「${name}」を追加しました。` + (r ? "（空きの都合で90°回転して配置）" : ""));
   });
 
   // ---------- room (fixed size) ----------
@@ -523,7 +649,7 @@
 
   // ---------- saved layouts (Supabase) ----------
   const fmtDate = s => new Date(s).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(fixed ? { fixed } : {}) })) });
+  const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, s, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(s ? { s } : {}), ...(fixed ? { fixed } : {}) })) });
   const ownCount = row => itemsFrom(row.data && row.data.items).filter(i => !i.fixed).length;
   function replaceLayout(items, cloud, pendingName, dirty) {
     Object.assign(state, { items, cloud, pendingName, dirty });
