@@ -15,13 +15,19 @@
   <div class="app">
     <section class="plan" aria-label="レイアウト">
       <div class="bar">
-        <button class="btn small menu-btn" id="menuBtn" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>メニュー</button>
+        <button class="btn small menu-btn" id="menuBtn" type="button" aria-haspopup="dialog"><svg viewBox="0 0 24 24"
+            aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>メニュー</button>
         <h1>研究室レイアウト</h1>
         <div class="roomsize" id="roomsize"></div>
         <div class="current" id="current"></div>
-        <div class="spacer"></div>
+      </div>
+      <div class="bar actions-bar">
+        <button class="btn small" id="newBtn" type="button">新規レイアウト</button>
         <button class="btn small" id="updateBtn" type="button" disabled title="保存済みのレイアウトを続きから編集しているときに使えます">更新</button>
         <button class="btn small" id="saveNewBtn" type="button">新規保存</button>
+        <div class="spacer"></div>
         <button class="btn small danger" id="clearBtn" type="button">すべて削除</button>
       </div>
       <div class="sheet" id="sheet">
@@ -44,19 +50,34 @@
                 <rect x="9" y="9" width="11" height="11" rx="2" />
                 <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
               </svg></button>
+            <button type="button" data-act="rename" data-movable data-single title="名称を変更" aria-label="名称を変更"
+              aria-expanded="false"><svg viewBox="0 0 24 24">
+                <path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16v4zM13.5 6.5l4 4" />
+              </svg></button>
             <button type="button" data-act="color" title="色を変更" aria-label="色を変更" aria-expanded="false"><span
                 class="cdot" id="fmenuDot"></span></button>
           </div>
-          <div class="fmenu-colors" id="fmenuColors" hidden></div>
+          <div class="fmenu-colors" id="fmenuColors" hidden>
+            <label class="switch" id="fmRugWrap" title="敷物: 他の家具の下に重ねて置けます"><input type="checkbox" id="fmRug" role="switch"><span class="track" aria-hidden="true"></span><span class="sw-text">敷物</span></label>
+          </div>
+          <div class="fmenu-name" id="fmenuName" hidden>
+            <label>名称<input id="nName" type="text" maxlength="24" autocomplete="off"></label>
+            <button type="button" class="btn primary small" data-act="applyName">適用</button>
+            <p class="err" id="nErr" role="alert"></p>
+          </div>
           <div class="fmenu-size" id="fmenuSize" hidden>
-            <label><span id="sWLabel">幅 (cm)</span><input id="sW" type="number" min="5" max="1000" step="5"></label>
+            <label id="sWWrap"><span id="sWLabel">幅 (cm)</span><input id="sW" type="number" min="5" max="1000" step="5"></label>
             <span class="x" id="sX">×</span>
-            <label id="sDWrap"><span id="sDLabel">奥行 (cm)</span><input id="sD" type="number" min="5" max="1000" step="5"></label>
+            <label id="sDWrap"><span id="sDLabel">奥行 (cm)</span><input id="sD" type="number" min="5" max="1000"
+                step="5"></label>
             <button type="button" class="btn primary small" data-act="applySize">適用</button>
+            <button type="button" class="btn small max" id="sWMax" data-act="maxW" title="他の家具や壁に当たるまで両側に広げます">MAX</button>
+            <button type="button" class="btn small max" id="sDMax" data-act="maxD" title="他の家具や壁に当たるまで両側に広げます">MAX</button>
             <p class="err" id="sErr" role="alert"></p>
           </div>
         </div>
-        <div class="hint">ドラッグで移動 ・ Shift+クリックで複数選択 ・ 空白をドラッグで範囲選択 ・ R / Shift+R で右・左回転 ・ 矢印キーで 10cm 移動 ・ Delete で削除
+        <div class="hint">ドラッグで移動 ・ Shift+クリックで複数選択 ・ 空白をドラッグで範囲選択 ・ R / Shift+R で右・左回転 ・ 矢印キーで 10cm 移動 ・ Ctrl+C / V で複製
+          ・ Delete で削除
         </div>
       </div>
       <div class="selbar" id="selbar"></div>
@@ -73,7 +94,7 @@
         </div>
         <div>
           <label class="label" for="fName">名称</label>
-          <input id="fName" type="text" maxlength="24" value="机" autocomplete="off">
+          <input id="fName" type="text" maxlength="24" value="長机A" autocomplete="off">
         </div>
         <div>
           <span class="label">形状</span>
@@ -97,14 +118,16 @@
         <p class="sub" id="shapeHint" hidden></p>
         <div>
           <span class="label">色</span>
-          <div class="swatches" id="swatches"></div>
+          <div class="color-row">
+            <div class="swatches" id="swatches"></div>
+            <label class="switch" title="敷物: 他の家具の下に重ねて置けます（敷物どうしは重ねられません）"><input type="checkbox" id="fRug" role="switch"><span class="track" aria-hidden="true"></span><span class="sw-text">敷物</span></label>
+          </div>
         </div>
         <div>
           <span class="label">プレビュー</span>
           <div class="preview"><svg id="preview" xmlns="http://www.w3.org/2000/svg"></svg></div>
 
         </div>
-        <p class="err" id="formErr" role="alert"></p>
         <button class="btn primary" type="submit">レイアウトに追加</button>
       </form>
       <div>
@@ -150,6 +173,29 @@
       <div class="dlg-foot">
         <button class="btn" type="button" data-close>キャンセル</button>
         <button class="btn primary" type="submit" id="saveSubmit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dlg zoom-dlg" id="zoomDlg" aria-labelledby="zoomTitle">
+    <div class="dlg-head">
+      <h2 id="zoomTitle"></h2>
+    </div>
+    <svg id="zoomSvg" class="zoom-img" role="img" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="dlg-foot zoom-foot">
+      <button class="btn" type="button" data-close>閉じる</button>
+    </div>
+  </dialog>
+
+  <dialog class="dlg confirm-dlg" id="confirmDlg" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <div class="dlg-head">
+        <h2 id="confirmTitle">新規レイアウトにしますか？</h2>
+      </div>
+      <p class="confirm-msg">最後に保存してから追加した家具があります。保存していない変更は失われ、テンプレートの配置に戻ります。</p>
+      <div class="dlg-foot">
+        <button class="btn" value="cancel">キャンセル</button>
+        <button class="btn primary danger-fill" value="ok" id="confirmOk">新規レイアウトにする</button>
       </div>
     </form>
   </dialog>

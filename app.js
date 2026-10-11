@@ -4,10 +4,10 @@
   const NS = "http://www.w3.org/2000/svg";
   const ROOM = { w: 660, h: 480 };   // 部屋のサイズ (固定)
   const PRESETS = [
-    ["机", 120, 60, 0], ["椅子", 50, 50, 4], ["本棚", 90, 30, 2], ["ロッカー", 90, 50, 4],
-    ["実験台", 180, 75, 1], ["ミーティングテーブル", 180, 90, 2], ["ホワイトボード", 180, 20, 3],
-    ["プリンタ", 60, 50, 4], ["冷蔵庫", 60, 65, 5], ["ソファ", 160, 80, 3],
-    ["丸テーブル", 90, 90, 2, "circle"], ["丸椅子", 40, 40, 4, "circle"]
+    ["長机A", 120, 60, 0], ["長机B", 200, 60, 0], ["長机C", 240, 60, 0],
+    ["椅子", 50, 50, 1], ["卓", 80, 80, 2],
+    ["プリンタ", 60, 50, 4], ["冷蔵庫", 60, 60, 5],
+    ["丸椅子", 40, 40, 1, "circle"]
   ];
   // Template: fixed furniture. Cannot be moved, rotated, duplicated, resized or deleted; only the color can change.
   // This is the initial layout and what "すべて削除" returns to.
@@ -21,15 +21,17 @@
     TEMPLATE.map(([name, x, y, w, d, c], i) => ({ id: "t" + i, name, x, y, w, d, c, fixed: true }));
   // cloud: the saved layout being edited ({ id, name, author, updated_at }) or null.
   // dirty: changed since it was last saved / opened. pendingName: suggested name for the next "新規保存" (after a copy).
-  const initial = () => ({ room: { ...ROOM }, items: templateItems(), cloud: null, dirty: false, pendingName: null });
+  // added: furniture was added (form / duplicate / paste) since the last save; "新規レイアウト" asks before discarding it.
+  const initial = () => ({ room: { ...ROOM }, items: templateItems(), cloud: null, dirty: false, pendingName: null, added: false });
 
   let state = load() || initial();
   let sel = new Set();
-  let panel = null;        // "color" | "size" | null: which panel of the floating menu is open
+  let panel = null;        // "color" | "size" | "name" | null: which panel of the floating menu is open
   let marquee = null;
   let blockerId = null, blockerTimer = 0;
   let drag = null;
   let fColor = 0;
+  let clipboard = [];    // pieces copied with Ctrl/⌘+C (snapshots; pasting reuses the duplicate placement)
   let fShape = "rect";   // shape chosen in the add form: "rect" | "circle" | "tri"
 
   const $ = id => document.getElementById(id);
@@ -50,7 +52,8 @@
       id: typeof i.id === "string" && i.id && !/^t\d+$/.test(i.id) ? i.id.slice(0, 32) : uid(),
       name: String(i.name ?? "").slice(0, 24), x: num(i.x), y: num(i.y), w: num(i.w), d: num(i.d),
       c: color(i.c), r: ((num(i.r) % 4) + 4) % 4,
-      ...(i.s === "circle" || i.s === "tri" ? { s: i.s } : {})
+      ...(i.s === "circle" || i.s === "tri" ? { s: i.s } : {}),
+      ...(i.u === true ? { u: true } : {})
     })).map(i => (i.s === "circle" ? { ...i, d: i.w } : i)).filter(i => i.name && i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
     return [...fixed, ...own];
   }
@@ -60,11 +63,11 @@
       const s = JSON.parse(localStorage.getItem(STORE));
       if (!s || !Array.isArray(s.items)) return null;
       const cloud = s.cloud && typeof s.cloud.id === "string" ? cloudOf(s.cloud) : null;
-      return { room: { ...ROOM }, items: itemsFrom(s.items), cloud, dirty: !!s.dirty, pendingName: typeof s.pendingName === "string" ? s.pendingName : null };
-    } catch (e) {}
+      return { room: { ...ROOM }, items: itemsFrom(s.items), cloud, dirty: !!s.dirty, pendingName: typeof s.pendingName === "string" ? s.pendingName : null, added: !!s.added };
+    } catch (e) { }
     return null;
   }
-  function persist() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }
+  function persist() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { } }
   // Called after every edit: remembers the layout in this browser and marks it as having unsaved changes.
   function save() { state.dirty = true; persist(); }
   function uid() { return Math.random().toString(36).slice(2, 9); }   // declared (hoisted) because load() runs first
@@ -123,10 +126,11 @@
   }
   function blockerFor(r, ex) {
     if (r.x < 0 || r.y < 0 || r.x + r.w > state.room.w || r.y + r.d > state.room.h) return { wall: true };
-    const o = state.items.find(o => !ex.has(o.id) && overlap(r, o));
+    // A rug (u) can lie under ordinary furniture: only pieces of the same kind (both rugs / both not) block each other.
+    const o = state.items.find(o => !ex.has(o.id) && !!r.u === !!o.u && overlap(r, o));
     return o ? { item: o } : null;
   }
-  const hit = (item, x, y, w = item.w, d = item.d) => blockerFor({ x, y, w, d, s: item.s, r: item.r }, new Set([item.id]));
+  const hit = (item, x, y, w = item.w, d = item.d) => blockerFor({ x, y, w, d, s: item.s, r: item.r, u: item.u }, new Set([item.id]));
   const bounds = items => ({
     minX: Math.min(...items.map(m => m.x)), maxX: Math.max(...items.map(m => m.x + m.w)),
     minY: Math.min(...items.map(m => m.y)), maxY: Math.max(...items.map(m => m.y + m.d))
@@ -139,7 +143,7 @@
     rx = Math.max(-minX, Math.min(state.room.w - maxX, rx));
     ry = Math.max(-minY, Math.min(state.room.h - maxY, ry));
     const free = (dx, dy) => {
-      for (const m of members) { const h = blockerFor({ x: m.x + dx, y: m.y + dy, w: m.w, d: m.d, s: m.s, r: m.r }, ex); if (h) return h; }
+      for (const m of members) { const h = blockerFor({ x: m.x + dx, y: m.y + dy, w: m.w, d: m.d, s: m.s, r: m.r, u: m.u }, ex); if (h) return h; }
       return null;
     };
     let ax = 0, ay = 0, blocker = null;
@@ -152,10 +156,10 @@
     members.forEach(m => { m.x += ax; m.y += ay; });
     return { ax, ay, blocker };
   }
-  function findSpot(w, d, s, r) {
+  function findSpot(w, d, s, r, u) {
     for (let y = 0; y + d <= state.room.h; y += 10)
       for (let x = 0; x + w <= state.room.w; x += 10)
-        if (!hit({ id: null, s, r }, x, y, w, d)) return { x, y };
+        if (!hit({ id: null, s, r, u }, x, y, w, d)) return { x, y };
     return null;
   }
   function flashBlocker(b) {
@@ -206,7 +210,7 @@
     cap.textContent = `${W} × ${H} cm  (${(W * H / 10000).toFixed(1)} m²)`;
 
     // furniture: selected / dragged one drawn last so it sits on top
-    const order = [...state.items].sort((a, b) => sel.has(a.id) - sel.has(b.id));
+    const order = [...state.items].sort((a, b) => (!!b.u - !!a.u) || (sel.has(a.id) - sel.has(b.id)));
     for (const it of order)
       drawItem(svg, it, (it.fixed ? " fixed" : "") + (sel.has(it.id) ? " sel" : "") + (it.id === blockerId ? " blocker" : "") + (drag && sel.has(it.id) ? " dragging" : ""));
     el("rect", { x: 0, y: 0, width: W, height: H, class: "wall" }, svg);
@@ -255,12 +259,12 @@
   }
 
   // Read-only drawing of a saved layout: a small thumbnail (no labels) or a full preview (grid + labels).
-  function drawStatic(root, items, full) {
+  function drawStatic(root, items, full, gridId = "v") {
     const pad = full ? 12 : 6;
     root.setAttribute("viewBox", `${-pad} ${-pad} ${ROOM.w + pad * 2} ${ROOM.h + pad * 2}`);
     root.textContent = "";
     root.classList.add("mini");
-    if (full) { gridDefs(root, "v"); el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, fill: "url(#vM)" }, root); }
+    if (full) { gridDefs(root, gridId); el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, fill: `url(#${gridId}M)` }, root); }
     for (const it of items) {
       if (full) drawItem(root, it);
       else bodyEl(root, it, { class: "it", fill: fillOf(it.c), stroke: strokeOf(it.c) });
@@ -280,28 +284,30 @@
   }
 
   // ---------- floating menu ----------
-  const fmenu = $("fmenu"), fcolors = $("fmenuColors"), fsize = $("fmenuSize");
+  const fmenu = $("fmenu"), fcolors = $("fmenuColors"), fsize = $("fmenuSize"), fname = $("fmenuName");
   for (let c = 0; c < 6; c++) {
     const b = document.createElement("button"); b.type = "button"; b.dataset.color = c; b.setAttribute("aria-label", "色 " + (c + 1));
     b.innerHTML = '<span class="cdot"></span>';
     const d = b.firstChild; d.style.background = fillOf(c); d.style.borderColor = strokeOf(c);
-    fcolors.appendChild(b);
+    fcolors.insertBefore(b, $("fmRugWrap"));
   }
   function positionMenu() {
     const items = selItems();
     if (!items.length || drag || marquee) { fmenu.hidden = true; return; }
     const one = items.length === 1, movable = movableSel().length > 0;
-    if ((!one || !movable) && panel === "size") panel = null;
+    if ((!one || !movable) && (panel === "size" || panel === "name")) panel = null;
     fmenu.hidden = false;
-    fmenu.querySelectorAll("[data-act]").forEach(b => {
+    fmenu.querySelectorAll(".fmenu-row [data-act]").forEach(b => {   // toolbar only; buttons inside the panels manage themselves
       b.hidden = (b.hasAttribute("data-single") && !one) || (b.hasAttribute("data-movable") && !movable) ||
         (/^rot/.test(b.dataset.act) && items.every(i => i.s === "circle"));
     });
     const dot = $("fmenuDot"); dot.style.background = fillOf(items[0].c); dot.style.borderColor = strokeOf(items[0].c);
-    [...fcolors.children].forEach(b => (b.firstChild.dataset.on = items.every(i => i.c === +b.dataset.color)));
-    fcolors.hidden = panel !== "color"; fsize.hidden = panel !== "size";
+    fcolors.querySelectorAll("[data-color]").forEach(b => (b.firstChild.dataset.on = items.every(i => i.c === +b.dataset.color)));
+    $("fmRugWrap").hidden = !movable; $("fmRug").checked = movable && items.every(i => i.u);
+    fcolors.hidden = panel !== "color"; fsize.hidden = panel !== "size"; fname.hidden = panel !== "name";
     fmenu.querySelector('[data-act="color"]').setAttribute("aria-expanded", panel === "color");
     fmenu.querySelector('[data-act="size"]').setAttribute("aria-expanded", panel === "size");
+    fmenu.querySelector('[data-act="rename"]').setAttribute("aria-expanded", panel === "name");
     const { minX: x0, maxX: x1, minY: y0, maxY: y1 } = bounds(items);
     const ctm = svg.getScreenCTM(), box = $("sheet").getBoundingClientRect();
     const pt = svg.createSVGPoint();
@@ -321,8 +327,30 @@
     const k = shapeOf(it);
     $("sWLabel").textContent = k === "circle" ? "半径 (cm)" : k === "tri" ? "辺A・横 (cm)" : "幅 (cm)";
     $("sDLabel").textContent = k === "tri" ? "辺B・縦 (cm)" : "奥行 (cm)";
-    $("sX").hidden = $("sDWrap").hidden = k === "circle";
+    $("sX").hidden = $("sDWrap").hidden = $("sDMax").hidden = k === "circle";
+    $("sWMax").title = k === "circle" ? "他の家具や壁に当たるまで、中心を保って半径を広げます" : "他の家具や壁に当たるまで両側に広げます";
     $("sW").value = k === "circle" ? it.w / 2 : it.w; $("sD").value = it.d; $("sErr").textContent = "";
+  }
+  // MAX: grow the piece along one axis as far as it goes. Each side is pushed out separately (so the position may shift
+  // along that axis) until it would hit a wall or another piece. A circle grows evenly around its center.
+  function maxSize(it, axis) {
+    if (it.fixed) return;
+    const free = (x, y, w, d) => w <= 1000 && d <= 1000 && !hit(it, x, y, w, d);
+    const old = { x: it.x, y: it.y, w: it.w, d: it.d };
+    let { x, y, w, d } = old;
+    if (it.s === "circle") {
+      while (free(x - SNAP, y - SNAP, w + SNAP * 2, d + SNAP * 2)) { x -= SNAP; y -= SNAP; w += SNAP * 2; d += SNAP * 2; }
+    } else if (axis === "w") {
+      while (free(x - SNAP, y, w + SNAP, d)) { x -= SNAP; w += SNAP; }
+      while (free(x, y, w + SNAP, d)) w += SNAP;
+    } else {
+      while (free(x, y - SNAP, w, d + SNAP)) { y -= SNAP; d += SNAP; }
+      while (free(x, y, w, d + SNAP)) d += SNAP;
+    }
+    if (w === old.w && d === old.d) { $("sErr").textContent = "これ以上広げられません。"; return; }
+    Object.assign(it, { x, y, w, d });
+    openSizePanel(it); save(); render();
+    toast(it.s === "circle" ? `半径を ${w / 2}cm に広げました。` : `${axis === "w" ? "幅" : "奥行"}を ${axis === "w" ? w : d}cm に広げました。`);
   }
   function resize(it) {
     if (it.fixed) return;
@@ -351,12 +379,47 @@
         else { panel = "size"; openSizePanel(one); }
         positionMenu(); if (panel === "size") { $("sW").focus(); $("sW").select(); }
         break;
+      case "rename":
+        if (!one) break;
+        if (panel === "name") panel = null;
+        else { panel = "name"; $("nName").value = one.name; $("nErr").textContent = ""; }
+        positionMenu(); if (panel === "name") { $("nName").focus(); $("nName").select(); }
+        break;
+      case "applyName": if (one) rename(one); break;
       case "applySize": if (one) resize(one); break;
+      case "maxW": if (one) maxSize(one, "w"); break;
+      case "maxD": if (one) maxSize(one, "d"); break;
       case "rotL": if (movable.length) rotate(movable, -1); break;
       case "rotR": if (movable.length) rotate(movable, 1); break;
       case "dup": if (movable.length) duplicate(movable); break;
     }
   });
+  function rename(it) {
+    const name = $("nName").value.trim();
+    if (!name) { $("nErr").textContent = "名称を入力してください。"; return; }
+    it.name = name.slice(0, 24); panel = null; save(); render();
+    toast(`名称を「${it.name}」に変更しました。`);
+  }
+  fname.addEventListener("input", () => ($("nErr").textContent = ""));
+  fname.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); const it = movableSel()[0]; if (it) rename(it); }
+    else if (e.key === "Escape") { panel = null; positionMenu(); }
+  });
+
+  // Rug toggle for the selection. Switching must not leave a piece overlapping another of its (new) kind.
+  $("fmRug").addEventListener("change", e => {
+    const items = movableSel(), on = e.target.checked; if (!items.length) return;
+    const kind = o => (items.includes(o) ? on : !!o.u);
+    for (const m of items) {
+      const clash = state.items.find(o => o !== m && kind(o) === on && overlap(m, o));
+      if (clash) {
+        flashBlocker(clash); e.target.checked = !on; render();
+        toast(`「${clash.name}」と重なるため、敷物を${on ? "オン" : "オフ"}にできません。`); return;
+      }
+    }
+    items.forEach(i => { if (on) i.u = true; else delete i.u; }); save(); render();
+  });
+
   fsize.addEventListener("input", () => ($("sErr").textContent = ""));
   fsize.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); const it = movableSel()[0]; if (it) resize(it); }
@@ -498,7 +561,7 @@
     if (H > state.room.w || W > state.room.h) { toast("回転すると壁からはみ出すため、回転できません。"); return; }
     const cx = x => Math.max(0, Math.min(state.room.w - H, x)), cy = y => Math.max(0, Math.min(state.room.h - W, y));
     const place = (gx, gy) => items.map(it => ({
-      it, w: it.d, d: it.w, s: it.s, r: ((it.r || 0) + dir + 4) % 4,
+      it, w: it.d, d: it.w, s: it.s, u: it.u, r: ((it.r || 0) + dir + 4) % 4,
       x: dir > 0 ? gx + (maxY - it.y - it.d) : gx + (it.y - minY),
       y: dir > 0 ? gy + (it.x - minX) : gy + (maxX - it.x - it.w)
     }));
@@ -522,20 +585,24 @@
   // (so a single item lands right beside its source). Copies that would collide with anything are skipped.
   function duplicate(items) {
     const { minX, maxX, minY, maxY } = bounds(items);
-    let best = null;   // { dx, dy, fit: items that can be placed, dist }
+    let best = null;   // { dx, dy, fit: items that can be placed, dist, ang }
+    // Among offsets at the same distance, prefer right, then down, then left, then up (clockwise from the right; y points down).
+    const angleOf = (dx, dy) => (Math.atan2(dy, dx) + 2 * Math.PI) % (2 * Math.PI);
     for (let dy = -minY; dy <= state.room.h - maxY; dy += SNAP) {
       for (let dx = -minX; dx <= state.room.w - maxX; dx += SNAP) {
         if (!dx && !dy) continue;
         const dist = dx * dx + dy * dy;
-        if (best && best.fit.length === items.length && dist >= best.dist) continue;
-        const fit = items.filter(it => !blockerFor({ x: it.x + dx, y: it.y + dy, w: it.w, d: it.d, s: it.s, r: it.r }, new Set()));
+        if (best && best.fit.length === items.length && dist > best.dist) continue;
+        const fit = items.filter(it => !blockerFor({ x: it.x + dx, y: it.y + dy, w: it.w, d: it.d, s: it.s, r: it.r, u: it.u }, new Set()));
         if (!fit.length) continue;
-        if (!best || fit.length > best.fit.length || (fit.length === best.fit.length && dist < best.dist)) best = { dx, dy, fit, dist };
+        const ang = angleOf(dx, dy);
+        if (!best || fit.length > best.fit.length || (fit.length === best.fit.length && (dist < best.dist || (dist === best.dist && ang < best.ang - EPS))))
+          best = { dx, dy, fit, dist, ang };
       }
     }
     if (!best) { toast("空きスペースがないため、複製できません。"); return; }
     const copies = best.fit.map(it => ({ ...it, id: uid(), x: it.x + best.dx, y: it.y + best.dy }));
-    state.items.push(...copies);
+    state.items.push(...copies); state.added = true;
     setSel(copies.map(c => c.id));
     if (copies.length < items.length) toast(`干渉する家具は複製せず、${items.length}個中${copies.length}個を複製しました。`);
     save(); render();
@@ -556,6 +623,19 @@
     if (e.target.closest("input") || document.querySelector("dialog[open]")) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") { e.preventDefault(); setSel(state.items.filter(i => !i.fixed).map(i => i.id)); render(); return; }
     if (e.key === "Escape") { setSel([]); render(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+      e.preventDefault();
+      const items = movableSel();
+      if (!items.length) { if (sel.size) toast("固定の家具はコピーできません。"); return; }
+      clipboard = items.map(i => ({ ...i }));
+      toast(`${items.length}個の家具をコピーしました。Ctrl+V で貼り付けできます。`);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
+      e.preventDefault();
+      if (clipboard.length) duplicate(clipboard);   // placed beside the copied pieces, same rules as the duplicate button
+      return;
+    }
     const items = movableSel(); if (!items.length) return;
     const step = e.shiftKey ? 50 : 10;
     const mv = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
@@ -578,7 +658,6 @@
     $("fX").hidden = $("fDWrap").hidden = k === "circle";
     $("shapeHint").hidden = k !== "tri";
     $("shapeHint").textContent = "直角をはさむ2辺の長さを入力します。向きは配置後の回転で変えられます。";
-    $("formErr").textContent = "";
     renderPreview();
   }
   $("shapeSeg").addEventListener("click", e => { const b = e.target.closest("[data-shape]"); if (b) setShape(b.dataset.shape); });
@@ -602,7 +681,7 @@
     b.onclick = () => {
       setShape(shape || "rect");
       $("fName").value = n; $("fW").value = shape === "circle" ? w / 2 : w; $("fD").value = d; setColor(c);
-      $("formErr").textContent = ""; renderPreview();
+      renderPreview();
     };
     presets.appendChild(b);
   }
@@ -613,23 +692,23 @@
     b.setAttribute("aria-label", "色 " + (c + 1)); b.onclick = () => { setColor(c); renderPreview(); };
     sw.appendChild(b);
   }
-  function setColor(c) { fColor = c; [...sw.children].forEach((b, i) => b.setAttribute("aria-pressed", i === c)); }
+  function setColor(c) { fColor = c;[...sw.children].forEach((b, i) => b.setAttribute("aria-pressed", i === c)); }
   setColor(0);
-  ["fName", "fW", "fD"].forEach(id => $(id).addEventListener("input", () => { $("formErr").textContent = ""; renderPreview(); }));
+  ["fName", "fW", "fD"].forEach(id => $(id).addEventListener("input", renderPreview));
 
   $("addForm").addEventListener("submit", e => {
     e.preventDefault();
     const name = $("fName").value.trim(), f = formShape();
-    const err = $("formErr");
-    if (!name) return (err.textContent = "名称を入力してください。");
-    if (f.err) return (err.textContent = f.err);
+    if (!name) return toast("名称を入力してください。");
+    if (f.err) return toast(f.err);
     const { w, d } = f, k = f.s === "rect" ? undefined : f.s;
-    if ((w > state.room.w || d > state.room.h) && (d > state.room.w || w > state.room.h)) return (err.textContent = "部屋より大きいため配置できません。");
-    let s = findSpot(w, d, k, 0), W = w, D = d, r = 0;
-    if (!s && f.s !== "circle") { s = findSpot(d, w, k, 1); W = d; D = w; r = 1; }   // otherwise try it turned 90°
-    if (!s) return (err.textContent = "空いているスペースがありません。家具を動かしてから追加してください。");
-    const it = { id: uid(), name, w: W, d: D, x: s.x, y: s.y, c: fColor, r, ...(k ? { s: k } : {}) };
-    state.items.push(it); setSel([it.id]); save(); render();
+    if ((w > state.room.w || d > state.room.h) && (d > state.room.w || w > state.room.h)) return toast("部屋より大きいため配置できません。");
+    const rug = $("fRug").checked || undefined;
+    let s = findSpot(w, d, k, 0, rug), W = w, D = d, r = 0;
+    if (!s && f.s !== "circle") { s = findSpot(d, w, k, 1, rug); W = d; D = w; r = 1; }   // otherwise try it turned 90°
+    if (!s) return toast("空いているスペースがありません。家具を動かしてから追加してください。");
+    const it = { id: uid(), name, w: W, d: D, x: s.x, y: s.y, c: fColor, r, ...(k ? { s: k } : {}), ...(rug ? { u: true } : {}) };
+    state.items.push(it); state.added = true; setSel([it.id]); save(); render();
     toast(`「${name}」を追加しました。` + (r ? "（空きの都合で90°回転して配置）" : ""));
   });
 
@@ -649,10 +728,10 @@
 
   // ---------- saved layouts (Supabase) ----------
   const fmtDate = s => new Date(s).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, s, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(s ? { s } : {}), ...(fixed ? { fixed } : {}) })) });
+  const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, s, u, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(s ? { s } : {}), ...(u ? { u } : {}), ...(fixed ? { fixed } : {}) })) });
   const ownCount = row => itemsFrom(row.data && row.data.items).filter(i => !i.fixed).length;
   function replaceLayout(items, cloud, pendingName, dirty) {
-    Object.assign(state, { items, cloud, pendingName, dirty });
+    Object.assign(state, { items, cloud, pendingName, dirty, added: false });
     setSel([]); persist(); render();
   }
   // Asks for a second press before an action that would discard unsaved changes.
@@ -670,7 +749,7 @@
   $("saveNewBtn").addEventListener("click", async () => {
     $("saveErr").textContent = "";
     $("saveSubmit").disabled = false;
-    try { $("saveAuthor").value = localStorage.getItem(STORE + "-author") || ""; } catch (e) {}
+    try { $("saveAuthor").value = localStorage.getItem(STORE + "-author") || ""; } catch (e) { }
     defaultName = "";
     $("saveName").value = state.pendingName ? state.pendingName + "のコピー" : "";
     $("saveName").placeholder = "空欄なら「レイアウト＋通し番号」";
@@ -690,7 +769,7 @@
     $("saveSubmit").disabled = true; $("saveErr").textContent = "";
     try {
       const row = await LayoutDB.create(name, author, layoutData());
-      try { localStorage.setItem(STORE + "-author", author); } catch (e2) {}
+      try { localStorage.setItem(STORE + "-author", author); } catch (e2) { }
       replaceLayout(state.items, cloudOf(row), null, false);
       saveDlg.close();
       toast(`「${row.name}」として保存しました。`);
@@ -712,7 +791,7 @@
         forceUpdate = setTimeout(() => { forceUpdate = 0; btn.textContent = "更新"; }, 5000);
         toast("他の人が先にこのレイアウトを更新しています。もう一度押すと上書きします。");
       } else {
-        state.cloud = cloudOf(row); state.dirty = false; persist();
+        state.cloud = cloudOf(row); state.dirty = false; state.added = false; persist();
         toast(`「${row.name}」を更新しました。`);
       }
     } catch (err) {
@@ -725,9 +804,18 @@
   let rows = [], viewId = null;
   $("menuBtn").addEventListener("click", () => { menuDlg.showModal(); loadList(); });
   $("reloadBtn").addEventListener("click", loadList);
-  $("newLayoutBtn").addEventListener("click", e => guardDirty(e.currentTarget, () => {
-    replaceLayout(templateItems(), null, null, false); menuDlg.close(); toast("新しいレイアウトを作成しました。");
-  }));
+  // Back to the template as a new unsaved layout. Asks first only if furniture was added since the last save.
+  const confirmDlg = $("confirmDlg");
+  function newLayout() {
+    const go = () => { replaceLayout(templateItems(), null, null, false); menuDlg.close(); toast("新しいレイアウトを作成しました。"); };
+    if (!state.added) return go();
+    confirmDlg.returnValue = "";
+    confirmDlg.onclose = () => { if (confirmDlg.returnValue === "ok") go(); };
+    confirmDlg.showModal();
+    $("confirmOk").focus();
+  }
+  $("newBtn").addEventListener("click", newLayout);
+  $("newLayoutBtn").addEventListener("click", newLayout);
   async function loadList() {
     const ul = $("savedList");
     ul.innerHTML = '<li class="msg">読み込み中…</li>';
@@ -756,13 +844,25 @@
   $("savedList").addEventListener("click", e => {
     const b = e.target.closest("button[data-id]"); if (!b) return;
     viewId = b.dataset.id; renderSaved(); renderView();
+    if (e.target.closest(".thumb")) openZoom(rows.find(r => r.id === viewId));
   });
+  // Enlarged image of a saved layout, with a close button below it.
+  const zoomDlg = $("zoomDlg");
+  function openZoom(row) {
+    if (!row) return;
+    $("zoomTitle").textContent = row.name;
+    drawStatic($("zoomSvg"), itemsFrom(row.data && row.data.items), true, "z");
+    $("zoomSvg").setAttribute("aria-label", row.name + " の拡大表示");
+    zoomDlg.showModal();
+  }
   function renderView() {
     const v = $("menuView"); v.textContent = "";
     const row = rows.find(r => r.id === viewId);
     if (!row) { v.innerHTML = '<p class="empty">左の一覧からレイアウトを選ぶと、ここに表示されます。</p>'; return; }
     const big = el("svg", { class: "big", role: "img", "aria-label": row.name + " のプレビュー" }, v);
     drawStatic(big, itemsFrom(row.data && row.data.items), true);
+    big.addEventListener("click", () => openZoom(row));
+    el("title", {}, big).textContent = "クリックで拡大";
     const h = document.createElement("h3"); h.textContent = row.name;
     const meta = document.createElement("p"); meta.className = "meta";
     meta.textContent = `作成者: ${row.author || "なし"} ・ 家具 ${ownCount(row)}個\n作成 ${fmtDate(row.created_at)} ・ 更新 ${fmtDate(row.updated_at)}`;
