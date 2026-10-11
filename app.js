@@ -3,11 +3,17 @@
   const STORE = "lab-layout-tpl-v1";
   const NS = "http://www.w3.org/2000/svg";
   const ROOM = { w: 660, h: 480 };   // 部屋のサイズ (固定)
+  // Presets: s = shape ("rect" | "circle" | "tri"; circle sizes are the diameter), rug = shown as a rug (can lie under other furniture).
   const PRESETS = [
-    ["長机A", 120, 60, 0], ["長机B", 200, 60, 0], ["長机C", 240, 60, 0],
-    ["椅子", 50, 50, 1], ["卓", 80, 80, 2],
-    ["プリンタ", 60, 50, 4], ["冷蔵庫", 60, 60, 5],
-    ["丸椅子", 40, 40, 1, "circle"]
+    { name: "長机A", w: 120, d: 60, c: 0, s: "rect", rug: false },
+    { name: "長机B", w: 200, d: 60, c: 0, s: "rect", rug: false },
+    { name: "長机C", w: 240, d: 60, c: 0, s: "rect", rug: false },
+    { name: "椅子", w: 50, d: 50, c: 1, s: "rect", rug: false },
+    { name: "卓", w: 80, d: 80, c: 2, s: "rect", rug: false },
+    { name: "プリンタ", w: 60, d: 50, c: 4, s: "rect", rug: false },
+    { name: "冷蔵庫", w: 60, d: 60, c: 5, s: "rect", rug: false },
+    { name: "丸椅子", w: 40, d: 40, c: 1, s: "circle", rug: false },
+    { name: "畳", w: 180, d: 90, c: 1, s: "rect", rug: true }
   ];
   // Template: fixed furniture. Cannot be moved, rotated, duplicated, resized or deleted; only the color can change.
   // This is the initial layout and what "すべて削除" returns to.
@@ -25,13 +31,17 @@
   const initial = () => ({ room: { ...ROOM }, items: templateItems(), cloud: null, dirty: false, pendingName: null, added: false });
 
   let state = load() || initial();
+  // Undo / redo: snapshots of the items. `baseline` is the state after the last recorded edit; every save() that changed
+  // something pushes the previous baseline onto the undo stack.
+  let undoStack = [], redoStack = [], baseline = JSON.stringify(state.items);
   let sel = new Set();
   let panel = null;        // "color" | "size" | "name" | null: which panel of the floating menu is open
   let marquee = null;
   let blockerId = null, blockerTimer = 0;
   let drag = null;
   let fColor = 0;
-  let clipboard = [];    // pieces copied with Ctrl/⌘+C (snapshots; pasting reuses the duplicate placement)
+  let clipboard = [];    // pieces copied with Ctrl/⌘+C or cut with Ctrl/⌘+X (snapshots; pasting reuses the duplicate placement)
+  let clipboardCut = false;   // true until the first paste after a cut: that paste goes back to the original position
   let fShape = "rect";   // shape chosen in the add form: "rect" | "circle" | "tri"
 
   const $ = id => document.getElementById(id);
@@ -69,7 +79,24 @@
   }
   function persist() { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { } }
   // Called after every edit: remembers the layout in this browser and marks it as having unsaved changes.
-  function save() { state.dirty = true; persist(); }
+  function save() { state.dirty = true; record(); persist(); }
+  function record() {
+    const now = JSON.stringify(state.items);
+    if (now === baseline) return;
+    undoStack.push(baseline); if (undoStack.length > 100) undoStack.shift();
+    redoStack = []; baseline = now;
+  }
+  function resetHistory() { undoStack = []; redoStack = []; baseline = JSON.stringify(state.items); }
+  function stepHistory(from, to, done, none) {
+    if (drag || marquee) return;
+    if (!from.length) { toast(none); return; }
+    to.push(baseline); baseline = from.pop();
+    state.items = JSON.parse(baseline); state.dirty = true;
+    panel = null; setSel([...sel].filter(id => state.items.some(i => i.id === id)));
+    persist(); render(); toast(done);
+  }
+  const undo = () => stepHistory(undoStack, redoStack, "元に戻しました。", "元に戻せる操作はありません。");
+  const redo = () => stepHistory(redoStack, undoStack, "やり直しました。", "やり直せる操作はありません。");
   function uid() { return Math.random().toString(36).slice(2, 9); }   // declared (hoisted) because load() runs first
   const snap = v => Math.round(v / SNAP) * SNAP;
   const byId = id => state.items.find(i => i.id === id);
@@ -621,14 +648,14 @@
   // Duplicate the selection as one group, shifted by a single offset so the layout between the copies is preserved.
   // The offset is chosen to place as many copies as possible; among equals, the one closest to the original wins
   // (so a single item lands right beside its source). Copies that would collide with anything are skipped.
-  function duplicate(items) {
+  function duplicate(items, inPlace = false) {   // inPlace: the pieces may land exactly where they were (after a cut)
     const { minX, maxX, minY, maxY } = bounds(items);
     let best = null;   // { dx, dy, fit: items that can be placed, dist, ang }
     // Among offsets at the same distance, prefer right, then down, then left, then up (clockwise from the right; y points down).
     const angleOf = (dx, dy) => (Math.atan2(dy, dx) + 2 * Math.PI) % (2 * Math.PI);
     for (let dy = -minY; dy <= state.room.h - maxY; dy += SNAP) {
       for (let dx = -minX; dx <= state.room.w - maxX; dx += SNAP) {
-        if (!dx && !dy) continue;
+        if (!dx && !dy && !inPlace) continue;
         const dist = dx * dx + dy * dy;
         if (best && best.fit.length === items.length && dist > best.dist) continue;
         const fit = items.filter(it => !blockerFor({ x: it.x + dx, y: it.y + dy, w: it.w, d: it.d, s: it.s, r: it.r, u: it.u }, new Set()));
@@ -659,19 +686,32 @@
   });
   document.addEventListener("keydown", e => {
     if (e.target.closest("input") || document.querySelector("dialog[open]")) return;
+    const mod = e.metaKey || e.ctrlKey, key = e.key.toLowerCase();
+    if (mod && key === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }   // Ctrl+Z / Ctrl+Shift+Z
+    if (mod && key === "y") { e.preventDefault(); redo(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") { e.preventDefault(); setSel(state.items.filter(i => !i.fixed).map(i => i.id)); render(); return; }
     if (e.key === "Escape") { setSel([]); render(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
       e.preventDefault();
       const items = movableSel();
       if (!items.length) { if (sel.size) toast("固定の家具はコピーできません。"); return; }
-      clipboard = items.map(i => ({ ...i }));
+      clipboard = items.map(i => ({ ...i })); clipboardCut = false;
       toast(`${items.length}個の家具をコピーしました。Ctrl+V で貼り付けできます。`);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "x") {
+      e.preventDefault();
+      const items = movableSel();
+      if (!items.length) { if (sel.size) toast("固定の家具は切り取れません。"); return; }
+      clipboard = items.map(i => ({ ...i })); clipboardCut = true;
+      remove(items);
+      toast(`${items.length}個の家具を切り取りました。Ctrl+V で貼り付けできます。`);
       return;
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
       e.preventDefault();
-      if (clipboard.length) duplicate(clipboard);   // placed beside the copied pieces, same rules as the duplicate button
+      // placed beside the copied pieces (same rules as the duplicate button); right after a cut, back where they were
+      if (clipboard.length) { duplicate(clipboard, clipboardCut); clipboardCut = false; }
       return;
     }
     const items = movableSel(); if (!items.length) return;
@@ -712,13 +752,14 @@
   }
 
   const presets = $("presets");
-  for (const [n, w, d, c, shape] of PRESETS) {
+  for (const { name: n, w, d, c, s: shape, rug } of PRESETS) {
     const b = document.createElement("button"); b.type = "button"; b.className = "chip";
     b.textContent = n;
-    b.title = shape === "circle" ? `半径 ${w / 2} cm` : `${w} × ${d} cm`;
+    b.title = (shape === "circle" ? `半径 ${w / 2} cm` : `${w} × ${d} cm`) + (rug ? " ・ 敷物" : "");
     b.onclick = () => {
-      setShape(shape || "rect");
+      setShape(shape);
       $("fName").value = n; $("fW").value = shape === "circle" ? w / 2 : w; $("fD").value = d; setColor(c);
+      $("fRug").checked = rug;
       renderPreview();
     };
     presets.appendChild(b);
@@ -768,7 +809,9 @@
   const layoutData = () => ({ room: { ...ROOM }, items: state.items.map(({ id, name, x, y, w, d, c, r, s, u, fixed }) => ({ id, name, x, y, w, d, c, r: r || 0, ...(s ? { s } : {}), ...(u ? { u } : {}), ...(fixed ? { fixed } : {}) })) });
   const ownCount = row => itemsFrom(row.data && row.data.items).filter(i => !i.fixed).length;
   function replaceLayout(items, cloud, pendingName, dirty) {
+    const sameItems = items === state.items;   // saving the current layout keeps its history; opening another one starts fresh
     Object.assign(state, { items, cloud, pendingName, dirty, added: false });
+    if (!sameItems) resetHistory();
     renaming = false;
     setSel([]); persist(); render();
   }
