@@ -54,7 +54,7 @@
       c: color(i.c), r: ((num(i.r) % 4) + 4) % 4,
       ...(i.s === "circle" || i.s === "tri" ? { s: i.s } : {}),
       ...(i.u === true ? { u: true } : {})
-    })).map(i => (i.s === "circle" ? { ...i, d: i.w } : i)).filter(i => i.name && i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
+    })).map(i => (i.s === "circle" ? { ...i, d: i.w } : i)).filter(i => i.w >= 10 && i.d >= 10 && i.x >= 0 && i.y >= 0 && i.x + i.w <= ROOM.w && i.y + i.d <= ROOM.h);
     return [...fixed, ...own];
   }
   function cloudOf(row) { return { id: row.id, name: row.name, author: row.author, updated_at: row.updated_at }; }
@@ -175,6 +175,7 @@
     if (parent) parent.appendChild(e);
     return e;
   };
+  const quoted = it => (it.name ? `「${it.name}」` : "名称のない家具");   // for messages
   const fillOf = c => `var(--f${c})`, strokeOf = c => `var(--f${c}s)`;
 
   function gridDefs(root, id) {
@@ -249,11 +250,14 @@
     }
     const s = Math.min(16, Math.max(7, Math.min(aw / (it.name.length * 1.1 + .5), ah / 2.6)));
     const vertical = kind === "rect" && it.d > it.w * 1.6 && it.w < 60;
-    const t = el("text", { x: cx, y: cy - (ah > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
-    t.textContent = it.name;
-    if (vertical) { t.setAttribute("transform", `rotate(90 ${cx} ${cy})`); t.setAttribute("y", cy + s * .35); t.setAttribute("font-size", Math.min(16, Math.max(7, Math.min(it.d / (it.name.length * 1.1 + .5), it.w / 2.2)))); }
-    if (ah > s * 2.6 && !vertical) {
-      const z = el("text", { x: cx, y: cy + s * 1.05, "font-size": s * .75, "text-anchor": "middle", class: "sz" }, g);
+    const named = it.name !== "";   // a piece may have no name: then nothing but its shape (and size) is drawn
+    if (named) {
+      const t = el("text", { x: cx, y: cy - (ah > s * 2.6 ? s * .25 : -s * .35), "font-size": s, "text-anchor": "middle", "font-weight": 500 }, g);
+      t.textContent = it.name;
+      if (vertical) { t.setAttribute("transform", `rotate(90 ${cx} ${cy})`); t.setAttribute("y", cy + s * .35); t.setAttribute("font-size", Math.min(16, Math.max(7, Math.min(it.d / (it.name.length * 1.1 + .5), it.w / 2.2)))); }
+    }
+    if (ah > s * (named ? 2.6 : 1.5) && !(named && vertical)) {
+      const z = el("text", { x: cx, y: cy + (named ? s * 1.05 : s * .3), "font-size": s * .75, "text-anchor": "middle", class: "sz" }, g);
       z.textContent = kind === "circle" ? `R${it.w / 2}` : `${it.w}×${it.d}`;
     }
   }
@@ -272,15 +276,51 @@
     el("rect", { x: 0, y: 0, width: ROOM.w, height: ROOM.h, class: "wall" }, root);
   }
 
+  // Header: name of the layout being edited (with a pencil to rename it once it is saved), author, unsaved-changes badge.
+  let renaming = false;
   function renderCurrent() {
-    const box = $("current"); box.textContent = "";
-    const span = (cls, text) => { const s = document.createElement("span"); s.className = cls; s.textContent = text; box.appendChild(s); };
-    if (state.cloud) {
-      span("nm", state.cloud.name);
-      if (state.cloud.author) span("by", "・ " + state.cloud.author);
-    } else span("new", state.pendingName ? `「${state.pendingName}」のコピー（未保存）` : "未保存のレイアウト");
-    if (state.cloud && state.dirty) span("dirty", "未保存の変更あり");
     $("updateBtn").disabled = !state.cloud;
+    const box = $("current");
+    if (renaming && state.cloud && box.querySelector("input")) return;   // keep what is being typed across re-renders
+    renaming = renaming && !!state.cloud;
+    box.textContent = "";
+    const span = (cls, text) => { const s = document.createElement("span"); s.className = cls; s.textContent = text; box.appendChild(s); };
+    if (!state.cloud) span("new", state.pendingName ? `「${state.pendingName}」のコピー（未保存）` : "未保存のレイアウト");
+    else if (renaming) renameForm(box);
+    else {
+      span("nm", state.cloud.name);
+      const pen = document.createElement("button");
+      pen.type = "button"; pen.className = "icon-btn"; pen.title = "レイアウト名を変更"; pen.setAttribute("aria-label", "レイアウト名を変更");
+      pen.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16v4zM13.5 6.5l4 4" /></svg>';
+      pen.addEventListener("click", () => { renaming = true; renderCurrent(); const i = box.querySelector("input"); i.focus(); i.select(); });
+      box.appendChild(pen);
+      if (state.cloud.author) span("by", "・ " + state.cloud.author);
+    }
+    if (state.cloud && state.dirty && !renaming) span("dirty", "未保存の変更あり");
+  }
+  function renameForm(box) {
+    const input = document.createElement("input");
+    input.type = "text"; input.className = "rename-input"; input.maxLength = 50; input.value = state.cloud.name;
+    input.setAttribute("aria-label", "レイアウト名");
+    const ok = document.createElement("button"); ok.type = "button"; ok.className = "btn primary small"; ok.textContent = "適用";
+    const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "btn small"; cancel.textContent = "キャンセル";
+    const close = () => { renaming = false; renderCurrent(); };
+    // Saved straight away (separately from 更新). Refused if someone else changed the layout after it was opened.
+    const apply = async () => {
+      const name = input.value.trim();
+      if (!name) return toast("レイアウト名を入力してください。");
+      if (name === state.cloud.name) return close();
+      ok.disabled = true;
+      try {
+        const row = await LayoutDB.update(state.cloud.id, { name }, state.cloud.updated_at);
+        if (!row) { toast("他の人が先にこのレイアウトを更新しています。メニューから開き直してください。"); ok.disabled = false; return; }
+        state.cloud = cloudOf(row); persist(); renaming = false; renderCurrent();
+        toast(`レイアウト名を「${row.name}」に変更しました。`);
+      } catch (err) { toast("名称を変更できませんでした: " + err.message); ok.disabled = false; }
+    };
+    ok.addEventListener("click", apply); cancel.addEventListener("click", close);
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); apply(); } else if (e.key === "Escape") close(); });
+    box.append(input, ok, cancel);
   }
 
   // ---------- floating menu ----------
@@ -360,7 +400,7 @@
     if (w > state.room.w || d > state.room.h) { err.textContent = "部屋より大きいため変更できません。"; return; }
     const x = Math.min(it.x, state.room.w - w), y = Math.min(it.y, state.room.h - d);
     const h = hit(it, x, y, w, d);
-    if (h && h.item) { flashBlocker(h.item); render(); err.textContent = `「${h.item.name}」と重なるため変更できません。`; return; }
+    if (h && h.item) { flashBlocker(h.item); render(); err.textContent = `${quoted(h.item)}と重なるため変更できません。`; return; }
     Object.assign(it, { x, y, w, d }); err.textContent = "";
     openSizePanel(it); save(); render();
   }
@@ -395,10 +435,8 @@
     }
   });
   function rename(it) {
-    const name = $("nName").value.trim();
-    if (!name) { $("nErr").textContent = "名称を入力してください。"; return; }
-    it.name = name.slice(0, 24); panel = null; save(); render();
-    toast(`名称を「${it.name}」に変更しました。`);
+    it.name = $("nName").value.trim().slice(0, 24); panel = null; save(); render();   // empty is allowed
+    toast(it.name ? `名称を「${it.name}」に変更しました。` : "名称を空にしました。");
   }
   fname.addEventListener("input", () => ($("nErr").textContent = ""));
   fname.addEventListener("keydown", e => {
@@ -414,7 +452,7 @@
       const clash = state.items.find(o => o !== m && kind(o) === on && overlap(m, o));
       if (clash) {
         flashBlocker(clash); e.target.checked = !on; render();
-        toast(`「${clash.name}」と重なるため、敷物を${on ? "オン" : "オフ"}にできません。`); return;
+        toast(`${quoted(clash)}と重なるため、敷物を${on ? "オン" : "オフ"}にできません。`); return;
       }
     }
     items.forEach(i => { if (on) i.u = true; else delete i.u; }); save(); render();
@@ -433,7 +471,7 @@
     const n = document.createElement("span"); n.className = "name";
     const m = document.createElement("span"); m.className = "meta";
     if (items.length === 1) { const it = items[0]; n.textContent = it.name; m.textContent = `${it.w} × ${it.d} cm ・ 位置 (${it.x}, ${it.y})` + (it.fixed ? " ・ 固定（色のみ変更可）" : ""); }
-    else { n.textContent = `${items.length}個を選択中`; m.textContent = items.slice(0, 4).map(i => i.name).join("、") + (items.length > 4 ? " ほか" : "") + (items.some(i => i.fixed) ? " ・ 固定の家具を含むため色のみ変更可" : ""); }
+    else { n.textContent = `${items.length}個を選択中`; m.textContent = items.slice(0, 4).map(i => i.name).filter(Boolean).join("、") + (items.length > 4 ? " ほか" : "") + (items.some(i => i.fixed) ? " ・ 固定の家具を含むため色のみ変更可" : ""); }
     bar.append(n, m);
     if (movableSel().length) {
       const a = document.createElement("div"); a.className = "actions";
@@ -449,7 +487,7 @@
       const b = document.createElement("button"); b.type = "button"; b.dataset.id = it.id;
       if (sel.has(it.id)) b.setAttribute("aria-current", "true");
       b.innerHTML = `<span class="dot" style="background:${fillOf(it.c)};border:1px solid ${strokeOf(it.c)}"></span><span class="nm"></span>${it.fixed ? '<span class="tag">固定</span>' : ""}<span class="sz">${it.w}×${it.d}</span>`;
-      b.querySelector(".nm").textContent = it.name;
+      b.querySelector(".nm").textContent = it.name || "-";   // list shows "-" for a piece without a name
       li.appendChild(b); ul.appendChild(li);
     }
   }
@@ -481,7 +519,7 @@
     if (circle) { aw = pw * .72; ah = pd * .6; }
     if (fShape === "tri") { const q = polyOf(shape); lx = (q[0][0] + q[1][0] + q[2][0]) / 3; ly = (q[0][1] + q[1][1] + q[2][1]) / 3; aw = Math.min(pw, pd) * .55; ah = Math.min(pw, pd) * .5; }
     const nm = el("text", { x: lx, y: ly + fs * .35, "text-anchor": "middle", "font-size": Math.min(fs * 1.1, aw / (($("fName").value.length || 1) * 1.1 + .5), ah / 1.8), fill: "var(--ink)", "font-weight": 500, "font-family": "var(--font-body)" }, p);
-    nm.textContent = $("fName").value || "(名称未入力)";
+    nm.textContent = $("fName").value.trim();
     // dimension lines (a circle only needs its radius)
     const sw = Math.max(.8, VW / 400);
     el("line", { x1: ox, y1: oy - fs * .9, x2: ox + pw, y2: oy - fs * .9, stroke: "var(--muted)", "stroke-width": sw }, p);
@@ -576,7 +614,7 @@
       }
       if (!blocker && h.item) blocker = h.item;
     }
-    if (blocker) { flashBlocker(blocker); toast(`回転すると「${blocker.name}」と重なるため、回転できません。`); }
+    if (blocker) { flashBlocker(blocker); toast(`回転すると${quoted(blocker)}と重なるため、回転できません。`); }
     else toast("回転すると壁からはみ出すため、回転できません。");
     render();
   }
@@ -699,7 +737,6 @@
   $("addForm").addEventListener("submit", e => {
     e.preventDefault();
     const name = $("fName").value.trim(), f = formShape();
-    if (!name) return toast("名称を入力してください。");
     if (f.err) return toast(f.err);
     const { w, d } = f, k = f.s === "rect" ? undefined : f.s;
     if ((w > state.room.w || d > state.room.h) && (d > state.room.w || w > state.room.h)) return toast("部屋より大きいため配置できません。");
@@ -709,7 +746,7 @@
     if (!s) return toast("空いているスペースがありません。家具を動かしてから追加してください。");
     const it = { id: uid(), name, w: W, d: D, x: s.x, y: s.y, c: fColor, r, ...(k ? { s: k } : {}), ...(rug ? { u: true } : {}) };
     state.items.push(it); state.added = true; setSel([it.id]); save(); render();
-    toast(`「${name}」を追加しました。` + (r ? "（空きの都合で90°回転して配置）" : ""));
+    toast((name ? `「${name}」` : "家具") + "を追加しました。" + (r ? "（空きの都合で90°回転して配置）" : ""));
   });
 
   // ---------- room (fixed size) ----------
@@ -732,6 +769,7 @@
   const ownCount = row => itemsFrom(row.data && row.data.items).filter(i => !i.fixed).length;
   function replaceLayout(items, cloud, pendingName, dirty) {
     Object.assign(state, { items, cloud, pendingName, dirty, added: false });
+    renaming = false;
     setSel([]); persist(); render();
   }
   // Asks for a second press before an action that would discard unsaved changes.
