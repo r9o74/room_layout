@@ -1047,3 +1047,10 @@ input[type="number"] {
 .icon-btn:hover { background: var(--bg); color: var(--accent); }
 .icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .current .rename-input { width: 14em; max-width: 40vw; padding: 3px 7px; font-size: 13px; }
+
+/* Triangle mirror button (add form): sits left of the rug switch */
+.row-right { display: flex; align-items: center; gap: 12px; }
+.flip-btn { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.flip-btn[hidden] { display: none; }
+.flip-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.flip-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--bg); }

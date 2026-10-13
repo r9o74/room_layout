@@ -38,6 +38,9 @@
                 viewBox="0 0 24 24">
                 <path d="M4 12a8 8 0 1 0 3-6.2M4 4v5h5" />
               </svg></button>
+            <button type="button" data-act="flip" data-movable title="左右反転（三角形）" aria-label="左右反転"><svg viewBox="0 0 24 24">
+                <path d="M12 3v18M8 7L3 17h5V7zM16 7l5 10h-5V7z" />
+              </svg></button>
             <button type="button" data-act="rotR" data-movable title="右に90°回転 (R)" aria-label="右に90°回転"><svg
                 viewBox="0 0 24 24">
                 <path d="M20 12a8 8 0 1 1-3-6.2M20 4v5h-5" />
@@ -120,7 +123,10 @@
           <span class="label">色</span>
           <div class="color-row">
             <div class="swatches" id="swatches"></div>
+            <div class="row-right">
+              <button type="button" class="btn small flip-btn" id="fFlip" aria-pressed="false" hidden title="三角形を左右反転します"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M8 7L3 17h5V7zM16 7l5 10h-5V7z" /></svg>左右反転</button>
             <label class="switch" title="敷物: 他の家具の下に重ねて置けます（敷物どうしは重ねられません）"><input type="checkbox" id="fRug" role="switch"><span class="track" aria-hidden="true"></span><span class="sw-text">敷物</span></label>
+            </div>
           </div>
         </div>
         <div>
